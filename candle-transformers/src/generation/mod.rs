@@ -60,6 +60,30 @@ impl LogitsProcessor {
         self.sample_multinomial(prs)
     }
 
+    pub fn sample_beam(&mut self, logits: &Tensor, beams:usize) -> Result<Vec<(f32, u32)>> {
+        let logits = logits.to_dtype(DType::F32)?;
+        let prs = candle_nn::ops::softmax_last_dim(&logits)?;
+        let prs: Vec<f32> = prs.to_vec1()?;
+        let mut argsort_indices = (0..prs.len()).collect::<Vec<_>>();
+
+        // Sort by descending probability.
+        argsort_indices.sort_by(|&i, &j| prs[j].partial_cmp(&prs[i]).unwrap());
+        let mut vec_f32: Vec<f32> = vec![]; // 示例数据
+        let mut vec_u32: Vec<u32> = vec![];       // 示例数据
+        if argsort_indices.len() < beams{
+            return Err(Error::Msg(format!("beams over output")));
+        }
+        // Clamp smaller probabilities to zero.
+        for i in 0..beams {
+            let index = argsort_indices[i];
+            vec_u32.push(index as u32);
+            vec_f32.push(prs[index]);
+
+        }
+
+        Ok(vec_f32.into_iter().zip(vec_u32.into_iter()).collect::<Vec<(f32, u32)>>())
+    }
+
     pub fn sample(&mut self, logits: &Tensor) -> Result<u32> {
         let logits = logits.to_dtype(DType::F32)?;
         let next_token = match self.temperature {

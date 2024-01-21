@@ -1,0 +1,76 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 't5'",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--example", "t5"
+                ],
+                "filter": {
+                    "name": "t5",
+                    "kind": "example"
+                }
+            },
+            "args": [
+                "--model-id", "jbochi/madlad400-3b-mt",
+                "--prompt", "<2en> 变量是程序可以操纵的命名存储。 简而言之，变量可以帮助程序存储值。 Rust 中的变量与特定的数据类型相关联。 数据类型决定变量的内存大小和布局，可以存储在该内存中的值的范围以及可以对该变量执行 的一组操作。",
+                "--decode", "--temperature", "0", "--top-p", "1"
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Rust t5",
+            "program": "${workspaceFolder}/target/debug/examples/t5", // 替换为你的可执行文件路径
+            "args": [
+                "--model-id", "t5-large",
+                "--prompt", "translate to German: A beautiful candle.",
+                "--decode", "--temperature", "0.1", "--top-p", "1"
+            ],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build --example quantized-t5 --features metal", // 在调试之前构建项目
+            "sourceLanguages": ["rust"]
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Rust quantized-t5",
+            "program": "${workspaceFolder}/target/debug/examples/quantized-t5", // 替换为你的可执行文件路径
+            "args": [
+                "--model-id", "jbochi/madlad400-3b-mt", "--weight-file", "model-q4k.gguf",
+                "--prompt", "<2en> 变量是程序可以操纵的命名存储。 简而言之，变量可以帮助程序存储值。 Rust 中的变量与特定的数据类型相关联。 数据类型决定变量的内存大小和布局，可以存储在该内存中的值的范围以及可以对该变量执行 的一组操作。",
+                "--temperature", "0.1", "--top-p", "1"
+            ],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build --example quantized-t5 --features metal", // 在调试之前构建项目
+            "sourceLanguages": ["rust"]
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug integration test 'quantized_tests'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--test=quantized_tests",
+                    "--package=candle-wasm-tests"
+                ],
+                "filter": {
+                    "name": "quantized_tests",
+                    "kind": "test"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

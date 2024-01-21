@@ -1,10 +1,30 @@
+use std::path::Path;
+
 use super::with_tracing::{linear, Embedding, Linear};
 use candle::{Result, Tensor};
 use candle_nn::{layer_norm, LayerNorm, VarBuilder};
+use serde::{Deserialize, Deserializer};
+use std::str::FromStr;
+use candle_nn::Activation;
+use std::fs::File;
+use std::io::Read;
 
-#[derive(Debug, Clone)]
+fn deserialize_activation<'de, D>(deserializer: D) -> std::result::Result<Activation, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer).expect("deserialize_activation fail");
+    Activation::from_str(&s).map_err(|err| {
+        // Convert your error to serde's error
+        serde::de::Error::custom(format!("Error parsing activation: {:?}", err))
+    })
+}
+
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     pub vocab_size: usize,
+    pub num_beams: Option<usize>,
     pub decoder_vocab_size: Option<usize>,
     pub max_position_embeddings: usize,
     pub encoder_layers: usize,
@@ -15,6 +35,7 @@ pub struct Config {
     pub decoder_attention_heads: usize,
     pub use_cache: bool,
     pub is_encoder_decoder: bool,
+    #[serde(deserialize_with = "deserialize_activation")]
     pub activation_function: candle_nn::Activation,
     pub d_model: usize,
     pub decoder_start_token_id: u32,
@@ -48,9 +69,33 @@ impl Config {
             share_encoder_decoder_embeddings: true,
             use_cache: true,
             vocab_size: 53017,
+            num_beams: None,
         }
     }
-
+    pub fn opus_mt_zh_en() -> Self {
+        Self {
+            activation_function: candle_nn::Activation::Swish,
+            d_model: 512,
+            decoder_attention_heads: 8,
+            decoder_ffn_dim: 2048,
+            decoder_layers: 6,
+            decoder_start_token_id: 65000,
+            decoder_vocab_size: Some(65001),
+            encoder_attention_heads: 8,
+            encoder_ffn_dim: 2048,
+            encoder_layers: 6,
+            eos_token_id: 0,
+            forced_eos_token_id: 0,
+            is_encoder_decoder: true,
+            max_position_embeddings: 512,
+            pad_token_id: 65000,
+            scale_embedding: true,
+            share_encoder_decoder_embeddings: true,
+            use_cache: true,
+            vocab_size: 65001,
+            num_beams: None,
+        }
+    }
     // https://huggingface.co/Helsinki-NLP/opus-mt-fr-en/blob/main/config.json
     pub fn opus_mt_fr_en() -> Self {
         Self {
@@ -73,7 +118,14 @@ impl Config {
             share_encoder_decoder_embeddings: true,
             use_cache: true,
             vocab_size: 59514,
+            num_beams: None,
         }
+    }
+    pub fn read_from_file<P: AsRef<Path>>(path: P) -> Self {
+        let mut file = File::open(path).expect("File not found");
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).expect("Failed to read file");
+        serde_json::from_str(&contents).expect("Failed to parse json")
     }
 }
 
@@ -301,10 +353,10 @@ impl DecoderLayer {
         &mut self,
         xs: &Tensor,
         encoder_xs: Option<&Tensor>,
-        attn_mask: &Tensor,
+        attn_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
         let residual = xs;
-        let xs = (self.self_attn.forward(xs, None, Some(attn_mask))? + residual)?
+        let xs = (self.self_attn.forward(xs, None, attn_mask)? + residual)?
             .apply(&self.self_attn_layer_norm)?;
         let xs = match encoder_xs {
             None => xs,
@@ -418,7 +470,7 @@ impl Decoder {
         xs: &Tensor,
         encoder_xs: Option<&Tensor>,
         past_kv_len: usize,
-        attn_mask: &Tensor,
+        attn_mask: Option<&Tensor>,
     ) -> Result<Tensor> {
         let xs = xs.apply(&self.embed_tokens)?;
         let xs = match self.embed_scale {
@@ -506,10 +558,10 @@ impl MTModel {
         let mask: Vec<_> = (0..seq_len)
             .flat_map(|i| (0..seq_len).map(move |j| if j > i { f32::NEG_INFINITY } else { 0f32 }))
             .collect();
-        let mask = Tensor::from_vec(mask, (seq_len, seq_len), xs.device())?;
+        let mask = Tensor::from_vec(mask, (seq_len, seq_len), xs.device())?.unsqueeze(0)?;
         self.model
             .decoder
-            .forward(xs, Some(encoder_xs), past_kv_len, &mask)?
+            .forward(xs, Some(encoder_xs), past_kv_len, Some(&mask))?
             .apply(&self.lm_head)?
             .broadcast_add(&self.final_logits_bias)
     }

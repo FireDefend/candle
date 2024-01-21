@@ -3,7 +3,7 @@
 ## Encoder-decoder example:
 
 ```bash
-$ cargo run --example t5 --release -- --model-id "t5-small" --prompt "translate to German: A beautiful candle." --decode
+$ cargo run --example t5 --release -- --model-id "t5-small" --prompt "translate to French: A beautiful candle." --decode
 ...
  Eine schöne Kerze.
 9 tokens generated (2.42 token/s)

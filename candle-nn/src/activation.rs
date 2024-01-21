@@ -1,5 +1,6 @@
-use candle::{Result, Tensor};
+use candle::{Result, Tensor, Error};
 use serde::Deserialize;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -18,6 +19,21 @@ pub enum Activation {
     HardSwish,
     Elu(f64),
     LeakyRelu(f64),
+}
+
+impl FromStr for Activation {
+    type Err = Error;
+
+    fn from_str(input: &str) ->  Result<Activation> {
+        match input.to_lowercase().as_str() {
+            "gelu" => Ok(Activation::Gelu),
+            "newgelu" => Ok(Activation::NewGelu),
+            "relu" => Ok(Activation::Relu),
+            "swish" => Ok(Activation::Swish),
+            // ... handle other variants similarly
+            _ => Err(Error::Msg(format!("Unknown activation: {}", input))),
+        }
+    }
 }
 
 impl super::Module for Activation {

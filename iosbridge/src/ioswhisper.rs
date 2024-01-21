@@ -1,30 +1,23 @@
-// https://github.com/openai/whisper/blob/main/whisper/model.py/rgs
-// TODO:
-// - Batch size greater than 1.
-// - More token filters (SuppressBlanks, ApplyTimestampRules).
-
-#[cfg(feature = "accelerate")]
-extern crate accelerate_src;
-
-#[cfg(feature = "mkl")]
-extern crate intel_mkl_src;
-
 use anyhow::{Error as E, Result};
 use candle::{Device, IndexOp, Tensor};
 use candle_nn::{ops::softmax, VarBuilder};
 use clap::{Parser, ValueEnum};
-use hf_hub::{api::sync::Api, Repo, RepoType};
 use rand::{distributions::Distribution, SeedableRng};
+use sdl2::AudioSubsystem;
 use tokenizers::Tokenizer;
+use std::os::raw::{c_char};
+use std::ffi::{CString, CStr};
+use std::sync::atomic::{Ordering, AtomicBool};
+use std::sync::{Mutex, Arc};
+use std::time::Instant;
+use sdl2::audio::{AudioCallback, AudioSpecDesired};
 
-mod multilingual;
 use candle_transformers::models::whisper::{self as m, audio, Config};
-
+mod multilingual;
 pub enum Model {
     Normal(m::model::Whisper),
     Quantized(m::quantized_model::Whisper),
 }
-
 // Maybe we should use some traits rather than doing the dispatch for all these.
 impl Model {
     pub fn config(&self) -> &Config {
@@ -153,7 +146,7 @@ impl Decoder {
         })
     }
 
-    fn decode(&mut self, mel: &Tensor, t: f64) -> Result<DecodingResult> {
+    fn decode(&mut self, mel: &Tensor, t: f64, predictionStringCallback: Option<extern "C" fn(*const c_char)>,) -> Result<DecodingResult> {
         let model = &mut self.model;
         let audio_features = model.encoder_forward(mel, true)?;
         if self.verbose {
@@ -221,6 +214,14 @@ impl Decoder {
             let prob = softmax(&logits, candle::D::Minus1)?
                 .i(next_token as usize)?
                 .to_scalar::<f32>()? as f64;
+            match predictionStringCallback{
+                Some(callback) =>{
+                    let re = self.tokenizer.decode(&tokens, true).map_err(E::msg)?;
+                    let c_string = CString::new(re).expect("CString::new failed in call back");
+                    callback(c_string.as_ptr());
+                },
+                None => {},
+            }
             if next_token == self.eot_token || tokens.len() > model.config().max_target_positions {
                 break;
             }
@@ -239,9 +240,9 @@ impl Decoder {
         })
     }
 
-    fn decode_with_fallback(&mut self, segment: &Tensor) -> Result<DecodingResult> {
+    fn decode_with_fallback(&mut self, segment: &Tensor, predictionStringCallback: Option<extern "C" fn(*const c_char)>,) -> Result<DecodingResult> {
         for (i, &t) in m::TEMPERATURES.iter().enumerate() {
-            let dr: Result<DecodingResult> = self.decode(segment, t);
+            let dr: Result<DecodingResult> = self.decode(segment, t, predictionStringCallback);
             if i == m::TEMPERATURES.len() - 1 {
                 return dr;
             }
@@ -262,17 +263,20 @@ impl Decoder {
         unreachable!()
     }
 
-    fn run(&mut self, mel: &Tensor) -> Result<Vec<Segment>> {
+    fn run(&mut self, mel: &Tensor,language_token: Option<u32>, predictionStringCallback: Option<extern "C" fn(*const c_char)>,) -> Result<String> {
+        self.language_token = language_token;
         let (_, _, content_frames) = mel.dims3()?;
         let mut seek = 0;
         let mut segments = vec![];
+        let mut result =  String::from("");
         while seek < content_frames {
             let start = std::time::Instant::now();
-            let time_offset = (seek * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
+            
+            let time_offset = (seek * self.model.config().num_mel_bins) as f64 / m::SAMPLE_RATE as f64;
             let segment_size = usize::min(content_frames - seek, m::N_FRAMES);
             let mel_segment = mel.narrow(2, seek, segment_size)?;
-            let segment_duration = (segment_size * m::HOP_LENGTH) as f64 / m::SAMPLE_RATE as f64;
-            let dr = self.decode_with_fallback(&mel_segment)?;
+            let segment_duration = (segment_size * self.model.config().num_mel_bins) as f64 / m::SAMPLE_RATE as f64;
+            let dr = self.decode_with_fallback(&mel_segment, predictionStringCallback)?;
             seek += segment_size;
             if dr.no_speech_prob > m::NO_SPEECH_THRESHOLD && dr.avg_logprob < m::LOGPROB_THRESHOLD {
                 println!("no speech detected, skipping {seek} {dr:?}");
@@ -327,14 +331,15 @@ impl Decoder {
                     segment.start,
                     segment.start + segment.duration,
                     segment.dr.text,
-                )
+                );
+                result = result + &segment.dr.text;
             }
             if self.verbose {
                 println!("{seek}: {segment:?}, in {:?}", start.elapsed());
             }
             segments.push(segment)
         }
-        Ok(segments)
+        Ok(result)
     }
 }
 
@@ -351,247 +356,301 @@ enum Task {
     Translate,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum WhichModel {
-    Tiny,
-    #[value(name = "tiny.en")]
-    TinyEn,
-    Base,
-    #[value(name = "base.en")]
-    BaseEn,
-    Small,
-    #[value(name = "small.en")]
-    SmallEn,
-    Medium,
-    #[value(name = "medium.en")]
-    MediumEn,
-    Large,
-    LargeV2,
-    LargeV3,
-    #[value(name = "distil-medium.en")]
-    DistilMediumEn,
-    #[value(name = "distil-large-v2")]
-    DistilLargeV2,
+pub struct Recorder {
+    pub buffer: Arc<Mutex<Vec<f32>>>,
 }
 
-impl WhichModel {
-    fn is_multilingual(&self) -> bool {
-        match self {
-            Self::Tiny
-            | Self::Base
-            | Self::Small
-            | Self::Medium
-            | Self::Large
-            | Self::LargeV2
-            | Self::LargeV3
-            | Self::DistilLargeV2 => true,
-            Self::TinyEn | Self::BaseEn | Self::SmallEn | Self::MediumEn | Self::DistilMediumEn => {
-                false
-            }
-        }
-    }
+impl AudioCallback for Recorder {
+    type Channel = f32;
 
-    fn model_and_revision(&self) -> (&'static str, &'static str) {
-        match self {
-            Self::Tiny => ("openai/whisper-tiny", "main"),
-            Self::TinyEn => ("openai/whisper-tiny.en", "refs/pr/15"),
-            Self::Base => ("openai/whisper-base", "refs/pr/22"),
-            Self::BaseEn => ("openai/whisper-base.en", "refs/pr/13"),
-            Self::Small => ("openai/whisper-small", "main"),
-            Self::SmallEn => ("openai/whisper-small.en", "refs/pr/10"),
-            Self::Medium => ("openai/whisper-medium", "main"),
-            Self::MediumEn => ("openai/whisper-medium.en", "main"),
-            Self::Large => ("openai/whisper-large", "refs/pr/36"),
-            Self::LargeV2 => ("openai/whisper-large-v2", "refs/pr/57"),
-            Self::LargeV3 => ("openai/whisper-large-v3", "main"),
-            Self::DistilMediumEn => ("distil-whisper/distil-medium.en", "main"),
-            Self::DistilLargeV2 => ("distil-whisper/distil-large-v2", "main"),
-        }
+    fn callback(&mut self, input: &mut [f32]) {
+        let mut buffer = self.buffer.lock().unwrap();
+        buffer.extend_from_slice(input);
     }
 }
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Run on CPU rather than on GPU.
-    #[arg(long)]
-    cpu: bool,
 
-    #[arg(long)]
-    model_id: Option<String>,
-
-    /// The model to use, check out available models:
-    /// https://huggingface.co/models?search=whisper
-    #[arg(long)]
-    revision: Option<String>,
-
-    /// The model to be used, can be tiny, small, medium.
-    #[arg(long, default_value = "tiny.en")]
-    model: WhichModel,
-
-    /// The input to be processed, in wav format, will default to `jfk.wav`. Alternatively
-    /// this can be set to sample:jfk, sample:gb1, ... to fetch a sample from the following
-    /// repo: https://huggingface.co/datasets/Narsil/candle_demo/
-    #[arg(long)]
-    input: Option<String>,
-
-    /// The seed to use when generating random samples.
-    #[arg(long, default_value_t = 299792458)]
-    seed: u64,
-
-    /// Enable tracing (generates a trace-timestamp.json file).
-    #[arg(long)]
-    tracing: bool,
-
-    #[arg(long)]
-    quantized: bool,
-
-    /// Language.
-    #[arg(long)]
-    language: Option<String>,
-
-    /// Task, when no task is specified, the input tokens contain only the sot token which can
-    /// improve things when in no-timestamp mode.
-    #[arg(long)]
-    task: Option<Task>,
-
-    /// Timestamps mode, this is not fully implemented yet.
-    #[arg(long)]
-    timestamps: bool,
-
-    /// Print the full DecodingResult structure rather than just the text.
-    #[arg(long)]
-    verbose: bool,
+pub struct IOSWhisperModel {
+    decoder: Decoder,
+    config: Config,
+    device: Device,
+    mel_filters: Vec<f32>,
+    audio_subsystem: AudioSubsystem,
+    desired_spec: AudioSpecDesired,
+    recoderdata: Arc<Mutex<Vec<f32>>>,
+    capture_device: Option<sdl2::audio::AudioDevice<Recorder>>,
+    start: Instant,
 }
 
-fn main() -> Result<()> {
-    use tracing_chrome::ChromeLayerBuilder;
-    use tracing_subscriber::prelude::*;
-
-    let args = Args::parse();
-    let _guard = if args.tracing {
-        let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
-        tracing_subscriber::registry().with(chrome_layer).init();
-        Some(guard)
-    } else {
-        None
-    };
-    let device = candle_examples::device(args.cpu)?;
-    let (default_model, default_revision) = if args.quantized {
-        ("lmz/candle-whisper", "main")
-    } else {
-        args.model.model_and_revision()
-    };
-    let default_model = default_model.to_string();
-    let default_revision = default_revision.to_string();
-    let (model_id, revision) = match (args.model_id, args.revision) {
-        (Some(model_id), Some(revision)) => (model_id, revision),
-        (Some(model_id), None) => (model_id, "main".to_string()),
-        (None, Some(revision)) => (default_model, revision),
-        (None, None) => (default_model, default_revision),
-    };
-
-    let (config_filename, tokenizer_filename, weights_filename, input) = {
-        let api = Api::new()?;
-        let dataset = api.dataset("Narsil/candle-examples".to_string());
-        let repo = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
-        let sample = if let Some(input) = args.input {
-            if let Some(sample) = input.strip_prefix("sample:") {
-                dataset.get(&format!("samples_{sample}.wav"))?
-            } else {
-                std::path::PathBuf::from(input)
-            }
-        } else {
-            println!("No audio file submitted: Downloading https://huggingface.co/datasets/Narsil/candle_demo/blob/main/samples_jfk.wav");
-            dataset.get("samples_jfk.wav")?
+impl IOSWhisperModel {
+    pub fn new(path:&str, devicein: &Device) -> Result<Self,E> {
+        let folder_path = std::path::PathBuf::from(path.to_owned());
+        let mut tokenizer_path = std::path::PathBuf::from(path.to_owned() + "tokenizer.json");
+        let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
+        let config = serde_json::from_str(&std::fs::read_to_string(path.to_owned() + "config.json")?)?;
+        let model_path = std::path::PathBuf::from(path.to_owned() + "model.safetensors");
+        let mut model =  {
+            let vb =
+                unsafe { VarBuilder::from_mmaped_safetensors(&[model_path], m::DTYPE, &devicein)? };
+            Model::Normal(m::model::Whisper::load(&vb, config)?)
         };
-        let (config, tokenizer, model) = if args.quantized {
-            let ext = match args.model {
-                WhichModel::TinyEn => "tiny-en",
-                WhichModel::Tiny => "tiny",
-                _ => unimplemented!("no quantized support for {:?}", args.model),
-            };
-            (
-                repo.get(&format!("config-{ext}.json"))?,
-                repo.get(&format!("tokenizer-{ext}.json"))?,
-                repo.get(&format!("model-{ext}-q80.gguf"))?,
-            )
-        } else {
-            let config = repo.get("config.json")?;
-            let tokenizer = repo.get("tokenizer.json")?;
-            let model = repo.get("model.safetensors")?;
-            (config, tokenizer, model)
+        let config: Config = serde_json::from_str(&std::fs::read_to_string(path.to_owned() + "config.json")?)?;
+        let mel_bytes = match config.num_mel_bins {
+            80 => include_bytes!("melfilters.bytes").as_slice(),
+            128 => include_bytes!("melfilters128.bytes").as_slice(),
+            nmel => anyhow::bail!("unexpected num_mel_bins {nmel}"),
         };
-        (config, tokenizer, model, sample)
-    };
-    let config: Config = serde_json::from_str(&std::fs::read_to_string(config_filename)?)?;
-    let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
+        let mut mel_filters = vec![0f32; mel_bytes.len() / 4];
+        <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(mel_bytes, &mut mel_filters);
+        let mut decoder = Decoder::new(
+            model,
+            tokenizer,
+            299792458, //seed
+            &devicein,
+            None,
+            Some(Task::Transcribe),
+            false,
+            true,
+        )?;
 
-    let mel_bytes = match config.num_mel_bins {
-        80 => include_bytes!("melfilters.bytes").as_slice(),
-        128 => include_bytes!("melfilters128.bytes").as_slice(),
-        nmel => anyhow::bail!("unexpected num_mel_bins {nmel}"),
-    };
-    let mut mel_filters = vec![0f32; mel_bytes.len() / 4];
-    <byteorder::LittleEndian as byteorder::ByteOrder>::read_f32_into(mel_bytes, &mut mel_filters);
-
-    let mut input = std::fs::File::open(input)?;
-    let (header, data) = wav::read(&mut input)?;
-    println!("loaded wav data: {header:?}");
-    if header.sampling_rate != m::SAMPLE_RATE as u32 {
-        anyhow::bail!("wav file must have a {} sampling rate", m::SAMPLE_RATE)
+        let audio_subsystem = sdl2::init().expect("Failed to find input device").audio().expect("Failed to find input audio device");
+        println!("SDL2 Freq: 16000 Buffer Len: 4096");
+        let desired_spec = AudioSpecDesired {
+            freq: Some(16000),
+            channels: Some(1), // Mono
+            samples: Some(4096),     // Default sample size
+        };
+        let recoderdata = Arc::new(Mutex::new(Vec::new()));
+        Ok(Self {
+            decoder,
+            config,
+            device:devicein.clone(),
+            mel_filters,
+            audio_subsystem,
+            desired_spec,
+            recoderdata,
+            capture_device:None,
+            start:Instant::now(),
+        })
     }
-    let data = data.as_sixteen().expect("expected 16 bit wav file");
-    let pcm_data: Vec<_> = data[..data.len() / header.channel_count as usize]
-        .iter()
-        .map(|v| *v as f32 / 32768.)
-        .collect();
-    println!("pcm data loaded {}", pcm_data.len());
-    let mel = audio::pcm_to_mel(&config, &pcm_data, &mel_filters);
-    let mel_len = mel.len();
-    let mel = Tensor::from_vec(
-        mel,
-        (1, config.num_mel_bins, mel_len / config.num_mel_bins),
-        &device,
-    )?;
-    println!("loaded mel: {:?}", mel.dims());
 
-    let mut model = if args.quantized {
-        let vb =
-            candle_transformers::quantized_var_builder::VarBuilder::from_gguf(&weights_filename)?;
-        Model::Quantized(m::quantized_model::Whisper::load(&vb, config)?)
-    } else {
-        let vb =
-            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], m::DTYPE, &device)? };
-        Model::Normal(m::model::Whisper::load(&vb, config)?)
-    };
+    pub fn inference(
+        &mut self,
+        input:Vec<f32>,
+        languagetoken: Option<String>,
+        predictionStringCallback: Option<extern "C" fn(*const c_char)>,
+    ) -> Result<String,E> {
+        
+        let mel = audio::pcm_to_mel(&self.config, &input, &self.mel_filters);
+        //let mel :Vec<f32>= input.iter().take(self.config.num_mel_bins * (input.len() / self.config.num_mel_bins)).cloned().collect();//audio::pcm_to_mel(&self.config, &input, &self.mel_filters);
+        let mel_len = mel.len();
+        let mel = Tensor::from_vec(
+            mel,
+            (1, self.config.num_mel_bins, mel_len / self.config.num_mel_bins),
+            &self.device,
+        )?;
+        println!("loaded mel: {:?}", mel.dims());
 
-    let language_token = match (args.model.is_multilingual(), args.language) {
-        (true, None) => {
-            let re = Some(multilingual::detect_language(&mut model, &tokenizer, &mel)?);
-            println!("detected language");
-            re
-        },
-        (false, None) => None,
-        (true, Some(language)) => match token_id(&tokenizer, &format!("<|{language}|>")) {
-            Ok(token_id) => Some(token_id),
-            Err(_) => anyhow::bail!("language {language} is not supported"),
-        },
-        (false, Some(_)) => {
-            anyhow::bail!("a language cannot be set for non-multilingual models")
+        let languagetoken = match languagetoken{
+            Some(languagetoken) =>{
+                languagetoken
+            },
+            None => {                
+                let re = multilingual::detect_language(&mut self.decoder.model, &self.decoder.tokenizer, &mel).expect("whidper detect_language failed");
+                println!("detected language!");
+                re
+            },
+        };
+
+        let language = Some(crate::ioswhisper::token_id(&self.decoder.tokenizer, &languagetoken)?);
+
+        return Ok(self.decoder.run(&mel,language, predictionStringCallback)?.to_owned());
+    }
+
+    pub fn recordandinference(
+        &mut self,
+        languagetoken: Option<String>,
+        predictionStringCallback: Option<extern "C" fn(*const c_char)>,
+    )  {
+        self.recoderdata = Arc::new(Mutex::new(Vec::new()));
+        let alldata_clone = Arc::clone(&self.recoderdata);
+        self.capture_device = Some(self.audio_subsystem.open_capture(None, &self.desired_spec, |_| {
+            Recorder { buffer: alldata_clone }
+        }).expect("Failed to find input capture audio device"));
+        // Start recording and playback
+        self.start = Instant::now();
+        (self.capture_device).as_mut().expect("Failed to find input capture audio device").resume();
+
+    }
+    pub fn stoprecord(
+        &mut self,
+        languagetoken: Option<String>,
+    ) -> Result<String,E> {
+        (self.capture_device).as_mut().expect("Failed to find input capture audio device").pause();
+        self.capture_device = None;
+        let final_data = {
+            let alldata = self.recoderdata.lock().unwrap();
+            alldata.clone()
+        };
+        println!("data size {:?}",final_data.len());
+        let elapsed = self.start.elapsed();
+
+        // 打印出所用的时间
+        println!("Elapsed time: {:.2?}", elapsed);
+        return Ok(self.inference(final_data,languagetoken,None)?.to_owned());
+    }
+
+    pub fn play(
+        &mut self,
+    ) -> Result<String,E> {
+        // Set up playback device
+        let playback_finished = Arc::new(AtomicBool::new(false));
+
+        let playback_device = self.audio_subsystem.open_playback(None, &self.desired_spec,  |_| {
+            Playback {
+                buffer: Arc::clone(&self.recoderdata),
+                position: 0,
+                finished: Arc::clone(&playback_finished),
+            }
+        }).expect("Failed to open playback device");
+
+        playback_device.resume(); // Start playing
+        
+
+        loop {
+            if playback_finished.load(Ordering::Relaxed) {
+                break; // Stop the loop if playback is finished
+            }
+            // You can adjust the sleep duration as needed
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-    };
     
-    let mut dc = Decoder::new(
-        model,
-        tokenizer,
-        args.seed,
-        &device,
-        language_token,
-        args.task,
-        args.timestamps,
-        args.verbose,
-    )?;
-    dc.run(&mel)?;
-    Ok(())
+        // Clean up
+        drop(playback_device);
+        return Ok("".to_owned());
+    }
+}
+
+struct Playback{
+    buffer: Arc<Mutex<Vec<f32>>>,
+    position: usize,
+    finished: Arc<AtomicBool>,
+}
+
+impl AudioCallback for Playback{
+    type Channel = f32;
+
+    fn callback(&mut self, out: &mut [f32]) {
+        let mut buffer = self.buffer.lock().unwrap();
+        let buffer_len = buffer.len();
+
+        for dst in out.iter_mut() {
+            if self.position >= buffer_len {
+                *dst = 0.0; // Output silence if we've played all data
+                self.finished.store(true, Ordering::Relaxed); // Signal that playback is finished
+                break;
+            } else {
+                *dst = buffer[self.position];
+                self.position += 1;
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ios_whisper_model_new(path: *const c_char, gpu: bool) -> *mut IOSWhisperModel {
+    // 从 C 字符串转换为 Rust 字符串
+    let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
+    let device;
+    if(gpu){
+        device = match Device::new_metal(0) {
+            Ok(result) => {
+                println!("gpu enabled");
+                result
+            },
+            Err(e) =>{ 
+                eprintln!("gpu enabled failed, using cpu");
+                Device::Cpu
+            },
+        };
+    }else{
+        device = Device::Cpu;
+    }
+    match IOSWhisperModel::new(&path_str, &device) {
+        Ok(model) => Box::into_raw(Box::new(model)),
+        Err(e) => { 
+            eprintln!("{}", e);
+            std::ptr::null_mut()
+        },
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ios_whisper_model_inference(ptr: *mut IOSWhisperModel, languagetoken: *const c_char){
+    if ptr.is_null() {
+        eprintln!("Error: iosmt_model_inference_new null");
+        return ;
+    }
+    let languagetoken_str: Option<String>;
+    if(languagetoken.is_null()){
+        languagetoken_str = None;
+    }else{
+        languagetoken_str = Some(unsafe { CStr::from_ptr(languagetoken).to_string_lossy().into_owned() });
+    }
+    // 把原始指针转换回 Box，这将确保资源被正确释放
+    let mut model_box = unsafe { Box::from_raw(ptr) };
+    model_box.recordandinference(languagetoken_str,None);
+    std::mem::forget(model_box);
+}
+
+#[no_mangle]
+pub extern "C" fn ios_whisper_model_stop_record(ptr: *mut IOSWhisperModel, languagetoken: *const c_char) -> *mut c_char {
+    if ptr.is_null() {
+        eprintln!("Error: iosmt_model_inference null");
+        return std::ptr::null_mut();
+    }
+    let languagetoken_str: Option<String>;
+    if(languagetoken.is_null()){
+        languagetoken_str = None;
+    }else{
+        languagetoken_str = Some(unsafe { CStr::from_ptr(languagetoken).to_string_lossy().into_owned() });
+    }
+    let mut model_box = unsafe { Box::from_raw(ptr) };
+    
+    let result_ptr = match model_box.stoprecord(languagetoken_str){
+        Ok(result) => {
+            match CString::new(result) {
+                Ok(c_string) => c_string.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            }
+        },
+        Err(e) =>{ 
+            eprintln!("{}", e);
+            std::ptr::null_mut()
+        },
+    };
+    std::mem::forget(model_box);
+    result_ptr
+}
+
+#[no_mangle]
+pub extern "C" fn ios_whisper_model_record_play(ptr: *mut IOSWhisperModel){
+    if ptr.is_null() {
+        eprintln!("Error: iosmt_model_inference null");
+        return ;
+    }
+    let mut model_box = unsafe { Box::from_raw(ptr) };
+    model_box.play();
+    std::mem::forget(model_box);
+}
+
+#[no_mangle]
+pub extern "C" fn ios_whisper_model_free(ptr: *mut IOSWhisperModel) {
+    if ptr.is_null() {
+        // 处理错误或提前返回
+        eprintln!("Error: iosmt_model_free null");
+        return;
+    }
+    // 把原始指针转换回 Box，这将确保资源被正确释放
+    unsafe { Box::from_raw(ptr) };
 }

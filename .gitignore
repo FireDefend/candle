@@ -36,3 +36,6 @@ candle-wasm-examples/*/package-lock.json
 candle-wasm-examples/**/config*.json
 .DS_Store
 .idea/*
+swift-chat/**
+iosbridge/SDL2*
+iosbridge/libSDL2*

@@ -70,6 +70,7 @@ pub fn main() -> anyhow::Result<()> {
                     .get(name)?
             }
         };
+        //let tokenizer = std::path::PathBuf::from("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en/tokenizer-marian-base-zh.json");
         Tokenizer::from_file(&tokenizer).map_err(E::msg)?
     };
 
@@ -86,6 +87,7 @@ pub fn main() -> anyhow::Result<()> {
                     .get(name)?
             }
         };
+        //let tokenizer = std::path::PathBuf::from("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en/tokenizer-marian-base-en.json");
         Tokenizer::from_file(&tokenizer).map_err(E::msg)?
     };
     let mut tokenizer_dec = TokenOutputStream::new(tokenizer_dec);
@@ -107,6 +109,8 @@ pub fn main() -> anyhow::Result<()> {
                     .get("model.safetensors")?,
             },
         };
+        //let model = std::path::PathBuf::from("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en/model.pth");
+        // unsafe { VarBuilder::from_pth(model, DType::F32, &device)? }
         unsafe { VarBuilder::from_mmaped_safetensors(&[&model], DType::F32, &device)? }
     };
     let mut model = marian::MTModel::new(&config, vb)?;

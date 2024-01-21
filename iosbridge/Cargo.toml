@@ -1,0 +1,43 @@
+[package]
+name = "iosbridge"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+build = "build.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+accelerate-src = { workspace = true, optional = true }
+tokenizers = { workspace = true, features = ["onig"] }
+candle-transformers = { path = "../candle-transformers", version = "0.3.2" }
+anyhow = { workspace = true }
+candle-nn = { path = "../candle-nn", version = "0.3.2" }
+candle = { path = "../candle-core", version = "0.3.2", package = "candle-core" }
+clap = { workspace = true }
+rand = { workspace = true }
+serde_json = { workspace = true }
+byteorder = { workspace = true }
+wav = { workspace = true }
+intel-mkl-src = { workspace = true, optional = true }
+candle-examples = { path = "../candle-examples", version = "0.3.2" }
+#for test
+cpal = "0.15.2"
+rubato = "0.14.1"
+sdl2 = { git = "https://github.com/FireDefend/rust-sdl2.git", branch = "master" } # features = ["static-link"]
+#sdl2 = "0.36.0"
+
+
+[lib]
+name = "iosbridge"
+crate-type = ["staticlib", "cdylib"]
+
+[features]
+default = []
+accelerate = ["dep:accelerate-src", "candle/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
+mkl = ["dep:intel-mkl-src", "candle/mkl", "candle-nn/mkl"]
+metal = ["candle/metal", "candle-nn/metal"]

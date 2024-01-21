@@ -3,8 +3,9 @@ extern crate intel_mkl_src;
 
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
-use std::io::Write;
+
 use std::path::PathBuf;
+use std::io::{self, Write};
 
 use candle_transformers::models::t5;
 
@@ -65,11 +66,11 @@ struct Args {
     top_p: Option<f64>,
 
     /// Penalty to be applied for repeating tokens, 1. means no penalty.
-    #[arg(long, default_value_t = 1.1)]
+    #[arg(long, default_value_t = 1.2)]
     repeat_penalty: f32,
 
     /// The context size to consider for the repeat penalty.
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 128)]
     repeat_last_n: usize,
 }
 
@@ -153,20 +154,16 @@ fn main() -> Result<()> {
         .map_err(E::msg)?;
     match args.prompt {
         Some(prompt) => {
-            let tokens = tokenizer
+            let mut tokens = tokenizer
                 .encode(prompt, true)
                 .map_err(E::msg)?
                 .get_ids()
                 .to_vec();
-            let input_token_ids = Tensor::new(&tokens[..], device)?.unsqueeze(0)?;
-            if !args.decode {
-                let mut model = builder.build_encoder()?;
-                let start = std::time::Instant::now();
-                let ys = model.forward(&input_token_ids)?;
-                println!("{ys}");
-                println!("Took {:?}", start.elapsed());
-            } else {
-                let mut model = builder.build_conditional_generation()?;
+            let mut input_token_ids = Tensor::new(&tokens[..], device)?.unsqueeze(0)?;
+            let mut model = builder.build_conditional_generation()?;
+            let mut input = String::new();
+            loop {
+                model.clear_kv_cache();
                 let mut output_token_ids = [builder
                     .config
                     .decoder_start_token_id
@@ -191,12 +188,11 @@ fn main() -> Result<()> {
                 let mut logits_processor = LogitsProcessor::new(299792458, temperature, args.top_p);
                 let encoder_output = model.encode(&input_token_ids)?;
                 let start = std::time::Instant::now();
-
                 for index in 0.. {
                     if output_token_ids.len() > 512 {
                         break;
                     }
-                    let decoder_token_ids = if index == 0 || !builder.config.use_cache {
+                    let decoder_token_ids = if index == 0 {
                         Tensor::new(output_token_ids.as_slice(), device)?.unsqueeze(0)?
                     } else {
                         let last_token = *output_token_ids.last().unwrap();
@@ -233,6 +229,28 @@ fn main() -> Result<()> {
                     output_token_ids.len(),
                     output_token_ids.len() as f64 / dt.as_secs_f64(),
                 );
+
+                input.clear();
+
+                if let Err(error) = io::stdin().read_line(&mut input) {
+                    println!("Error reading input: {}", error);
+                    continue;
+                }
+        
+                // Trim the newline character from the input
+                let input = input.trim();
+        
+                // Check if the input is 'exit' to break the loop
+                if input == "exit" {
+                    break;
+                }
+                tokens = tokenizer
+                .encode(input, true)
+                .map_err(E::msg)?
+                .get_ids()
+                .to_vec();
+                input_token_ids = Tensor::new(&tokens[..], device)?.unsqueeze(0)?;
+
             }
         }
         None => {
