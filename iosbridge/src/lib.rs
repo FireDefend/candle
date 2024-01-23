@@ -61,6 +61,7 @@ impl IOSMTModel {
         predictionStringCallback: Option<extern "C" fn(*const c_char)>,
     ) -> Result<String,E> {
         let device = &self.device;
+        let start = Instant::now();
         self.model.reset_kv_cache();
         let mut tokenizer_dec = TokenOutputStream::new(self.outputtokenizer.clone());
         let mut logits_processor =
@@ -138,13 +139,13 @@ impl IOSMTModel {
                     //println!("{:?} ", beams[0]);
                     //let resulttmp = decode_output(&(self.inputtokenizer), &(self.outputtokenizer),beams[0].0.as_slice())?;
                     let resulttmp = tokenizer_dec.decode( beams[0].0.as_slice())?;
-                    println!("{resulttmp}");
+                    //println!("{resulttmp}");
                 }
                 
                 // Select sequence with highest score
                 let best_beam = beams.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
                 result = tokenizer_dec.decode( best_beam.0.as_slice())?;
-                print!("{result}");
+                //print!("{result}");
             }
             None => {
                 let mut token_ids = vec![self.config.decoder_start_token_id];
@@ -177,7 +178,6 @@ impl IOSMTModel {
                     }
                 }
                 if let Some(rest) = tokenizer_dec.decode_rest().map_err(E::msg)? {
-                    print!("{rest}");
                     result = result + &rest;
                     match predictionStringCallback{
                         Some(callback) =>{
@@ -191,7 +191,8 @@ impl IOSMTModel {
             }
         }
 
-        println!();
+        let elapsed = start.elapsed();
+        println!("MT model inference Elapsed time: {:.2?}", elapsed);
         Ok(result)
     }
 }
@@ -227,7 +228,7 @@ pub extern "C" fn iosmt_model_new(path: *const c_char, gpu: bool) -> *mut IOSMTM
 }
 
 #[no_mangle]
-pub extern "C" fn iosmt_model_inference_new(ptr: *mut IOSMTModel, input: *const c_char, predictionStringCallback: extern "C" fn(*const c_char)) -> *mut c_char {
+pub extern "C" fn iosmt_model_inference_new(ptr: *mut IOSMTModel, input: *const c_char, predictionStringCallback: Option<extern "C" fn(*const c_char)>) -> *mut c_char {
     if ptr.is_null() {
         eprintln!("Error: iosmt_model_inference_new null");
         return std::ptr::null_mut();
@@ -236,7 +237,7 @@ pub extern "C" fn iosmt_model_inference_new(ptr: *mut IOSMTModel, input: *const 
     // 把原始指针转换回 Box，这将确保资源被正确释放
     let mut model_box = unsafe { Box::from_raw(ptr) };
     
-    let result_ptr = match model_box.inference(input_str,Some(predictionStringCallback)){
+    let result_ptr = match model_box.inference(input_str,predictionStringCallback){
         Ok(result) => {
             match CString::new(result) {
                 Ok(c_string) => c_string.into_raw(),
@@ -302,7 +303,7 @@ pub extern fn rust_greeting(to: *const c_char) -> *mut c_char {
 }
 
 #[no_mangle]
-pub extern fn inference_free(s: *mut c_char) {
+pub extern fn string_free(s: *mut c_char) {
     unsafe {
         if s.is_null() { return }
         let _ = CString::from_raw(s);
@@ -314,7 +315,7 @@ pub fn safe_load_model_inference(path: &str,input: &str) {
     let c_input = CString::new(input).expect("CString::new failed");
     let model = unsafe { iosmt_model_new(c_path.as_ptr(), true) };
     let result = iosmt_model_inference(model,c_input.as_ptr());
-    inference_free(result);
+    string_free(result);
     iosmt_model_free(model);
 
 }

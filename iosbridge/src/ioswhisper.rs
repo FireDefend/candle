@@ -453,12 +453,12 @@ impl IOSWhisperModel {
 
         let languagetoken = match languagetoken{
             Some(languagetoken) =>{
-                languagetoken
+                format!("<|{}|>", languagetoken)
             },
             None => {                
                 let re = multilingual::detect_language(&mut self.decoder.model, &self.decoder.tokenizer, &mel).expect("whidper detect_language failed");
                 println!("detected language!");
-                re
+                format!("<|{}|>", re)
             },
         };
 
@@ -467,37 +467,63 @@ impl IOSWhisperModel {
         return Ok(self.decoder.run(&mel,language, predictionStringCallback)?.to_owned());
     }
 
-    pub fn recordandinference(
+    pub fn record(
         &mut self,
-        languagetoken: Option<String>,
-        predictionStringCallback: Option<extern "C" fn(*const c_char)>,
     )  {
         self.recoderdata = Arc::new(Mutex::new(Vec::new()));
         let alldata_clone = Arc::clone(&self.recoderdata);
         self.capture_device = Some(self.audio_subsystem.open_capture(None, &self.desired_spec, |_| {
             Recorder { buffer: alldata_clone }
-        }).expect("Failed to find input capture audio device"));
+        }).expect("open_capture Failed to find input capture audio device"));
         // Start recording and playback
-        self.start = Instant::now();
-        (self.capture_device).as_mut().expect("Failed to find input capture audio device").resume();
-
+        (self.capture_device).as_mut().expect("resume Failed to find input capture audio device").resume();
     }
     pub fn stoprecord(
         &mut self,
-        languagetoken: Option<String>,
-    ) -> Result<String,E> {
-        (self.capture_device).as_mut().expect("Failed to find input capture audio device").pause();
+    ) {
+        (self.capture_device).as_mut().expect("stoprecord Failed to find input capture audio device").pause();
         self.capture_device = None;
+    }
+
+    pub fn inferenceMel(
+        &mut self,
+        languagetoken: Option<String>,
+        predictionStringCallback: Option<extern "C" fn(*const c_char)>,
+    ) -> Result<String,E> {
         let final_data = {
             let alldata = self.recoderdata.lock().unwrap();
             alldata.clone()
         };
         println!("data size {:?}",final_data.len());
-        let elapsed = self.start.elapsed();
+        self.start = Instant::now();
 
-        // 打印出所用的时间
-        println!("Elapsed time: {:.2?}", elapsed);
-        return Ok(self.inference(final_data,languagetoken,None)?.to_owned());
+        let result = self.inference(final_data,languagetoken,predictionStringCallback)?.to_owned();
+        let elapsed = self.start.elapsed();
+        println!("inferenceMel Elapsed time: {:.2?}", elapsed);
+        return Ok(result);
+    }
+    
+    pub fn detectLanguage(
+        &mut self,
+    ) -> Option<String> {
+        let final_data = {
+            let alldata = self.recoderdata.lock().unwrap();
+            alldata.clone()
+        };
+        self.start = Instant::now();
+        let mel = audio::pcm_to_mel(&self.config, &final_data, &self.mel_filters);
+        let mel_len = mel.len();
+        let mel = Tensor::from_vec(
+            mel,
+            (1, self.config.num_mel_bins, mel_len / self.config.num_mel_bins),
+            &self.device,
+        ).ok()?;
+        println!("detectLanguage loaded mel: {:?}", mel.dims());
+
+        let languagetoken = multilingual::detect_language(&mut self.decoder.model, &self.decoder.tokenizer, &mel);
+        let elapsed = self.start.elapsed();
+        println!("detectLanguage Elapsed time: {:.2?}", elapsed);
+        languagetoken
     }
 
     pub fn play(
@@ -586,25 +612,55 @@ pub extern "C" fn ios_whisper_model_new(path: *const c_char, gpu: bool) -> *mut 
 }
 
 #[no_mangle]
-pub extern "C" fn ios_whisper_model_inference(ptr: *mut IOSWhisperModel, languagetoken: *const c_char){
+pub extern "C" fn ios_whisper_model_record(ptr: *mut IOSWhisperModel){
     if ptr.is_null() {
         eprintln!("Error: iosmt_model_inference_new null");
         return ;
     }
-    let languagetoken_str: Option<String>;
-    if(languagetoken.is_null()){
-        languagetoken_str = None;
-    }else{
-        languagetoken_str = Some(unsafe { CStr::from_ptr(languagetoken).to_string_lossy().into_owned() });
-    }
     // 把原始指针转换回 Box，这将确保资源被正确释放
     let mut model_box = unsafe { Box::from_raw(ptr) };
-    model_box.recordandinference(languagetoken_str,None);
+    model_box.record();
     std::mem::forget(model_box);
 }
 
 #[no_mangle]
-pub extern "C" fn ios_whisper_model_stop_record(ptr: *mut IOSWhisperModel, languagetoken: *const c_char) -> *mut c_char {
+pub extern "C" fn ios_whisper_model_stop_record(ptr: *mut IOSWhisperModel){
+    if ptr.is_null() {
+        eprintln!("Error: iosmt_model_inference null");
+        return;
+    }
+    let mut model_box = unsafe { Box::from_raw(ptr) };
+    
+    model_box.stoprecord();
+    std::mem::forget(model_box);
+}
+
+#[no_mangle]
+pub extern "C" fn ios_whisper_model_detect_language(ptr: *mut IOSWhisperModel) -> *mut c_char{
+    if ptr.is_null() {
+        eprintln!("Error: iosmt_model_inference null");
+        return std::ptr::null_mut();
+    }
+    let mut model_box = unsafe { Box::from_raw(ptr) };
+
+    let result_ptr = match model_box.detectLanguage(){
+        Some(result) => {
+            match CString::new(result) {
+                Ok(c_string) => c_string.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            }
+        },
+        None =>{ 
+            eprintln!("cannot detect language");
+            std::ptr::null_mut()
+        },
+    };
+    std::mem::forget(model_box);
+    result_ptr
+}
+
+#[no_mangle]
+pub extern "C" fn ios_whisper_model_inference(ptr: *mut IOSWhisperModel, languagetoken: *const c_char, predictionStringCallback: Option<extern "C" fn(*const c_char)>) -> *mut c_char {
     if ptr.is_null() {
         eprintln!("Error: iosmt_model_inference null");
         return std::ptr::null_mut();
@@ -617,7 +673,7 @@ pub extern "C" fn ios_whisper_model_stop_record(ptr: *mut IOSWhisperModel, langu
     }
     let mut model_box = unsafe { Box::from_raw(ptr) };
     
-    let result_ptr = match model_box.stoprecord(languagetoken_str){
+    let result_ptr = match model_box.inferenceMel(languagetoken_str, predictionStringCallback){
         Ok(result) => {
             match CString::new(result) {
                 Ok(c_string) => c_string.into_raw(),

@@ -16,7 +16,7 @@ use std::time::Duration;
 fn test_whisper() ->Result<(), Error> {
     let device = Device::Cpu;
     let mut ioswhisper = IOSWhisperModel::new("/Users/xigsun/Documents/repo/whisper-base/", &device)?;
-    ioswhisper.recordandinference(None,None);
+    ioswhisper.record();
 
 
     // Set up the resampler
@@ -37,13 +37,11 @@ fn test_whisper() ->Result<(), Error> {
 
 
     // 阻塞主线程，使音频流保持活动状态
-    std::thread::sleep(std::time::Duration::from_secs(15));
-    println!("stop");
-    ioswhisper.stoprecord(None);
-    std::thread::sleep(std::time::Duration::from_secs(16));
-    println!("stop2");
-    ioswhisper.play();
-
+    println!("recording");
+    std::thread::sleep(std::time::Duration::from_secs(8));
+    ioswhisper.stoprecord();
+    let token = ioswhisper.detectLanguage();
+    ioswhisper.inferenceMel(token, None);
     // let waves_in = vec![final_data;1];
     // let waves_out = resampler.process(&waves_in, None).unwrap();
     // let result = waves_out[0].clone();

@@ -109,32 +109,37 @@ pub fn detect_language(
     model: &mut super::Model,
     tokenizer: &Tokenizer,
     mel: &Tensor,
-) -> Result<String> {
-    let (_bsize, _, seq_len) = mel.dims3()?;
+) -> Option<String> {
+    let (_bsize, _, seq_len) = mel.dims3().ok()?;
     let mel = mel.narrow(
         2,
         0,
         usize::min(seq_len, model.config().max_source_positions),
-    )?;
+    ).ok()?;
     let device = mel.device();
     let language_token_ids = LANGUAGES
         .iter()
         .map(|(t, _)| crate::ioswhisper::token_id(tokenizer, &format!("<|{t}|>")))
-        .collect::<Result<Vec<_>>>()?;
-    let sot_token = crate::ioswhisper::token_id(tokenizer, crate::ioswhisper::m::SOT_TOKEN)?;
-    let audio_features = model.encoder_forward(&mel, true)?;
-    let tokens = Tensor::new(&[[sot_token]], device)?;
-    let language_token_ids = Tensor::new(language_token_ids.as_slice(), device)?;
-    let ys = model.decoder_forward(&tokens, &audio_features, true)?;
-    let logits = model.decoder_final_linear(&ys.i(..1)?)?.i(0)?.i(0)?;
-    let logits = logits.index_select(&language_token_ids, 0)?;
-    let probs = candle_nn::ops::softmax(&logits, D::Minus1)?;
-    let probs = probs.to_vec1::<f32>()?;
+        .collect::<Result<Vec<_>>>().ok()?;
+    let sot_token = crate::ioswhisper::token_id(tokenizer, crate::ioswhisper::m::SOT_TOKEN).ok()?;
+    let audio_features = model.encoder_forward(&mel, true).ok()?;
+    let tokens = Tensor::new(&[[sot_token]], device).ok()?;
+    let language_token_ids = Tensor::new(language_token_ids.as_slice(), device).ok()?;
+    let ys = model.decoder_forward(&tokens, &audio_features, true).ok()?;
+    let logits = model.decoder_final_linear(&ys.i(..1).ok()?).ok()?.i(0).ok()?.i(0).ok()?;
+    let logits = logits.index_select(&language_token_ids, 0).ok()?;
+    let probs = candle_nn::ops::softmax(&logits, D::Minus1).ok()?;
+    let probs = probs.to_vec1::<f32>().ok()?;
     let mut probs = LANGUAGES.iter().zip(probs.iter()).collect::<Vec<_>>();
     probs.sort_by(|(_, p1), (_, p2)| p2.total_cmp(p1));
     for ((_, language), p) in probs.iter().take(5) {
         println!("{language}: {p}")
     }
-    let target = format!("<|{}|>", probs[0].0.0);
-    Ok(target)
+    if(probs.len() <= 0){
+        None
+    }else if (probs[0].1 < &0.5) {
+        None
+    } else{
+        Some(probs[0].0.0.to_string())
+    }
 }
