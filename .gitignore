@@ -39,3 +39,5 @@ candle-wasm-examples/**/config*.json
 swift-chat/**
 iosbridge/SDL2*
 iosbridge/libSDL2*
+candle-examples/examples/marian-mt/opus-mt-en-zh/**
+candle-examples/examples/marian-mt/opus-mt-zh-en/**
