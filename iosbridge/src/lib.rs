@@ -37,8 +37,12 @@ impl IOSMTModel {
         let inputtokenizer = {
             Tokenizer::from_file(&tokenizer_path).map_err(E::msg)?
         };
-        let mut tokenizer_path = std::path::PathBuf::from(path.to_owned() + &format!("tokenizer-marian-base-{}.json","big")); //folder_name_parts[folder_name_parts.len()-1]));
-        let outputtokenizer = {
+        if folder_name_parts[folder_name_parts.len()-1].eq("en"){
+            tokenizer_path = std::path::PathBuf::from(path.to_owned() + &format!("tokenizer-marian-base-{}.json","big"));
+        }else{
+            tokenizer_path = std::path::PathBuf::from(path.to_owned() + &format!("tokenizer-marian-base-{}.json", folder_name_parts[folder_name_parts.len()-1]));
+        }
+        let mut outputtokenizer = {
             Tokenizer::from_file(&tokenizer_path).map_err(E::msg)?
         };
         tokenizer_path = std::path::PathBuf::from(path.to_owned() + "model.safetensors");
@@ -46,6 +50,15 @@ impl IOSMTModel {
         };
         let config = marian::Config::read_from_file(path.to_owned() + "config.json");
         let model: MTModel = marian::MTModel::new(&config, vb)?;
+        let startToken = outputtokenizer.decode(&vec![config.eos_token_id], true).map_err(E::msg)?;
+        let endToken = outputtokenizer.decode(&vec![config.pad_token_id], true).map_err(E::msg)?;
+        let tokens: Vec<String> = vec![startToken, endToken];
+        let tokens: Vec<_> = tokens
+        .into_iter()
+        .map(|s| tokenizers::AddedToken::from(s, true))
+        .collect();
+        outputtokenizer.add_special_tokens(&tokens);
+
         Ok(Self {
             model,
             inputtokenizer,
@@ -192,6 +205,7 @@ impl IOSMTModel {
         }
 
         let elapsed = start.elapsed();
+        println!("{}", result);
         println!("MT model inference Elapsed time: {:.2?}", elapsed);
         Ok(result)
     }

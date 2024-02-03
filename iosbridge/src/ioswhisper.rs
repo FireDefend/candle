@@ -494,7 +494,7 @@ impl IOSWhisperModel {
             let alldata = self.recoderdata.lock().unwrap();
             alldata.clone()
         };
-        println!("data size {:?}",final_data.len());
+        println!("data size: {:?} languagetoken: {:?}",final_data.len(), languagetoken);
         self.start = Instant::now();
 
         let result = self.inference(final_data,languagetoken,predictionStringCallback)?.to_owned();
