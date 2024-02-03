@@ -7,6 +7,7 @@ use std::str::FromStr;
 pub enum Activation {
     #[default]
     Gelu,
+    #[serde(alias = "gelu_new")]
     NewGelu,
     Relu,
     Relu2,

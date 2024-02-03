@@ -66,7 +66,7 @@ We also provide a some command line based examples using state of the art models
 - [Phi-1, Phi-1.5, and Phi-2](./candle-examples/examples/phi/): 1.3b and 2.7b general LLMs with performance on par with LLaMA-v2 7b.
 - [StableLM-3B-4E1T](./candle-examples/examples/stable-lm/): a 3b general LLM
   pre-trained on 1T tokens of English and code datasets.
-- [Minimal Mamba](./candle-examples/examples/minimal-mamba/): a minimal
+- [Minimal Mamba](./candle-examples/examples/mamba-minimal/): a minimal
   implementation of the Mamba state space model.
 - [Mistral7b-v0.1](./candle-examples/examples/mistral/): a 7b general LLM with
   better performance than all publicly available 13b models as of 2023-09-28.
@@ -109,6 +109,9 @@ We also provide a some command line based examples using state of the art models
 - [DINOv2](./candle-examples/examples/dinov2/): computer vision model trained
   using self-supervision (can be used for imagenet classification, depth
   evaluation, segmentation).
+- [VGG](./candle-examples/examples/vgg/),
+  [RepVGG](./candle-examples/examples/repvgg): computer vision models.
+- [BLIP](./candle-examples/examples/blip/): image to text model, can be used to
 - [BLIP](./candle-examples/examples/blip/): image to text model, can be used to
   generate captions for an image.
 - [Marian-MT](./candle-examples/examples/marian-mt/): neural machine translation
@@ -158,6 +161,7 @@ And then head over to
 - [`candle-ext`](https://github.com/mokeyish/candle-ext): An extension library to Candle that provides PyTorch functions not currently available in Candle.
 - [`kalosm`](https://github.com/floneum/floneum/tree/master/interfaces/kalosm): A multi-modal meta-framework in Rust for interfacing with local pre-trained models with support for controlled generation, custom samplers, in-memory vector databases, audio transcription, and more.
 - [`candle-sampling`](https://github.com/EricLBuehler/candle-sampling): Sampling techniques for Candle.
+- [`gpt-from-scratch-rs`](https://github.com/jeroenvlek/gpt-from-scratch-rs): A port of Andrej Karpathy's _Let's build GPT_ tutorial on YouTube showcasing the Candle API on a toy problem.
 
 If you have an addition to this list, please submit a pull request.
 
@@ -203,7 +207,7 @@ If you have an addition to this list, please submit a pull request.
     - Image to text.
         - BLIP.
     - Computer Vision Models.
-        - DINOv2, ConvMixer, EfficientNet, ResNet, ViT.
+        - DINOv2, ConvMixer, EfficientNet, ResNet, ViT, VGG, RepVGG.
         - yolo-v3, yolo-v8.
         - Segment-Anything Model (SAM).
 - File formats: load models from safetensors, npz, ggml, or PyTorch files.
