@@ -1,8 +1,8 @@
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-tokenizer1= AutoTokenizer.from_pretrained("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en")
+tokenizer= AutoTokenizer.from_pretrained("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en")
 
-model1 = AutoModelForSeq2SeqLM.from_pretrained("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en")
+model = AutoModelForSeq2SeqLM.from_pretrained("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en")
 # 准备要翻译的文本
 chinese_text = "求真务实是中国共产党人的重要思想和工作方法。前不久举行的中央经济工作会议上，习近平总书记着眼于做好明年经济工作、巩固和增强经济回升向好态势，对抓落实提出了明确要求，强调“要求真务实抓落实”“坚决纠治形式主义、官僚主义”。"  # 这里你可以替换成任何你想要翻译的中文文本
 chinese_text = "在上一篇文章中我们介绍了注意力机制—目前在深度学习中被广泛应用。注意力机制能够显著提高神经机器翻译任务的性能。本文将会看一看Transformer---加速训练注意力模型的方法。Transformers在很多特定任务上已经优于Google神经机器翻译模型了。不过其最大的优点在于它的并行化训练。Google云强烈建议使用TPU云提供的Transformer模型。我们赶紧撸起袖子拆开模型看一看内部究竟如何吧。"  # 这里你可以替换成任何你想要翻译的中文文本
@@ -143,7 +143,7 @@ tokenizer.save("/Users/xigsun/Documents/repo/candle/candle-examples/examples/mar
 
 
 
-# mbart test
+# mbart50 finetune test
 from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
 
 article_hi = "संयुक्त राष्ट्र के प्रमुख का कहना है कि सीरिया में कोई सैन्य समाधान नहीं है"
@@ -155,28 +155,111 @@ tokenizer = MBart50TokenizerFast.from_pretrained("/Users/xigsun/Documents/repo/m
 # translate Hindi to French
 tokenizer.src_lang = "hi_IN"
 encoded_hi = tokenizer(article_hi, return_tensors="pt")
+encoded_hi
 generated_tokens = model.generate(
     **encoded_hi,
     forced_bos_token_id=tokenizer.lang_code_to_id["fr_XX"]
 )
-tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
 # => "Le chef de l 'ONU affirme qu 'il n 'y a pas de solution militaire dans la Syrie."
 
+article_zh = "The model can translate directly between any pair of 50 languages. To translate into a target language, the target language id is forced as the first generated token. "
 # translate Arabic to English
-tokenizer.src_lang = "ar_AR"
-encoded_ar = tokenizer(article_ar, return_tensors="pt")
-generated_tokens = model.generate(
-    **encoded_ar,
-    forced_bos_token_id=tokenizer.lang_code_to_id["en_XX"]
-)
-tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-
-article_zh = "在视频编辑等专业工作流程中，你可以根据所要编辑或观看的视频，为显示屏设置相应的刷新率，以便与视频的帧速率相一致。"
-# translate Arabic to English
-tokenizer.src_lang = "zh_CN"
+tokenizer.src_lang = "en_XX"
 encoded_ar = tokenizer(article_zh, return_tensors="pt")
+encoded_ar
 generated_tokens = model.generate(
     **encoded_ar,
-    forced_bos_token_id=tokenizer.lang_code_to_id["en_XX"]
+    forced_bos_token_id=tokenizer.lang_code_to_id["zh_CN"]
 )
-tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+generated_tokens
+tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+
+article_zh = "Hello"
+# translate  to zh
+tokenizer.src_lang = "en_XX"
+encoded_ar = tokenizer(article_zh, return_tensors="pt")
+encoded_ar
+generated_tokens = model.generate(
+    **encoded_ar,
+    forced_bos_token_id=tokenizer.lang_code_to_id["fr_XX"]
+)
+generated_tokens
+tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+
+from convert_slow_tokenizer import MBart50Converter
+from transformers import AutoTokenizer
+
+
+tokenizer = AutoTokenizer.from_pretrained("/Users/xigsun/Documents/repo/mbart-large-50-many-to-many-mmt", use_fast=False)
+fast_tokenizer = MBart50Converter(tokenizer).converted()
+fast_tokenizer.save(f"/Users/xigsun/Documents/repo/mbart-large-50-many-to-many-mmt/tokenizer-base.json")
+
+tokenizer.src_lang = "en_XX"
+encoded_hi = tokenizer(article_zh, return_tensors="pt")
+
+# 获取encoder的输出
+encoder_outputs = model.model.encoder(**encoded_hi)
+
+# 直接访问嵌入层
+embed_tokens_output = model.model.encoder.embed_tokens(encoded_hi['input_ids'])
+embed_positions_output = model.model.encoder.embed_positions.forward(encoded_hi['input_ids'])
+
+# 注意：embed_positions 需要一个长度作为输入，而不是直接传入input_ids，此处简化处理
+from torch import nn
+import torch
+class MBartLearnedPositionalEmbedding1(nn.Embedding):
+    """
+    This module learns positional embeddings up to a fixed maximum size.
+    """
+    def __init__(self, num_embeddings: int, embedding_dim: int):
+        # MBart is set up so that if padding_idx is specified then offset the embedding ids by 2
+        # and adjust num_embeddings appropriately. Other models don't have this hack
+        self.offset = 2
+        super().__init__(num_embeddings + self.offset, embedding_dim)
+    def forward(self, input_ids: torch.Tensor, past_key_values_length: int = 0):
+        """`input_ids' shape is expected to be [bsz x seqlen]."""
+        bsz, seq_len = input_ids.shape[:2]
+        positions = torch.arange(
+            past_key_values_length, past_key_values_length + seq_len, dtype=torch.long, device=self.weight.device
+        ).expand(bsz, -1)
+        #print(positions)
+        #positions = positions + self.offset
+        #print(positions)
+        return super().forward(positions + self.offset)
+    
+def print_norm(module, input, output):
+    print(input)
+
+def pre_hook(module, input):
+    print(input)
+
+for layer in model.model.encoder.layers:
+    layer.register_forward_pre_hook(pre_hook)
+
+model_path = '/Users/xigsun/Documents/repo/mbart-large-50-many-to-many-mmt/pytorch_model.bin'
+model_state_dict = torch.load(model_path, map_location=torch.device('cpu'))
+
+# 打印所有权重的键，以帮助找到你感兴趣的字段
+for key in model_state_dict.keys():
+    print(key)
+
+#    ("vi", "vietnamese"),
+for key in tokenizer.lang_code_to_id.keys():
+    print( '("{0}", {1}),'.format(key, tokenizer.lang_code_to_id[key]) )
+
+
+from transformers import MBartForConditionalGeneration, MBart50TokenizerFast
+
+model = MBartForConditionalGeneration.from_pretrained("/Users/xigsun/Documents/repo/mbart-large-50")
+tokenizer = MBart50TokenizerFast.from_pretrained("/Users/xigsun/Documents/repo/mbart-large-50", src_lang="en_XX", tgt_lang="ro_RO")
+
+src_text = "Hello"
+tgt_text =  "Şeful ONU declară că nu există o soluţie militară în Siria"
+
+model_inputs = tokenizer(src_text, return_tensors="pt")
+with tokenizer.as_target_tokenizer():
+    labels = tokenizer(tgt_text, return_tensors="pt").input_ids
+
+generated_tokens = model.generate(**model_inputs, labels=labels) # forward pass
+tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)

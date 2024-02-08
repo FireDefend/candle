@@ -18,4 +18,10 @@ void ios_whisper_model_stop_record(IOSWhisperModel* ptr);
 const char* ios_whisper_model_detect_language(IOSWhisperModel* ptr);
 const char* ios_whisper_model_inference(IOSWhisperModel* ptr, const char* languagetoken, void (*predictionStringCallback)(const char*));
 void ios_whisper_model_record_play(IOSWhisperModel* ptr);
+
+//mbart model
+typedef struct IOSMBartModel IOSMBartModel;
+IOSMBartModel* iosmbart_model_new(const char* path, _Bool gpu);
+const char* iosmbart_model_inference_new(IOSMBartModel* ptr, const char* input, const char* src_lan, const char* target_lan, void (*predictionStringCallback)(const char*));
+void iosmbart_model_free(IOSMBartModel* ptr);
 #endif /* rsbridging_h */

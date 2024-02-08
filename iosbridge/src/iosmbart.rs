@@ -1,20 +1,74 @@
-pub mod ioswhisper;
-pub mod iosmbart;
+
 use std::os::raw::{c_char};
 use std::ffi::{CString, CStr};
 use anyhow::Error as E;
 use tokenizers::{Tokenizer, InputSequence};
-use candle_transformers::models::marian::{MTModel, self};
+use candle_transformers::models::mbart::{MBartModel, self};
 use candle_nn::VarBuilder;
 use candle::{DType, Tensor, Device};
 use candle_examples::token_output_stream::TokenOutputStream;
 use std::time::Instant;
 
-pub struct IOSMTModel {
-    model: MTModel,
+const lang_code_to_id: [(&str, u32); 52] = [
+    ("ar_AR", 250001),
+    ("cs_CZ", 250002),
+    ("de_DE", 250003),
+    ("en_XX", 250004),
+    ("es_XX", 250005),
+    ("et_EE", 250006),
+    ("fi_FI", 250007),
+    ("fr_XX", 250008),
+    ("gu_IN", 250009),
+    ("hi_IN", 250010),
+    ("it_IT", 250011),
+    ("ja_XX", 250012),
+    ("kk_KZ", 250013),
+    ("ko_KR", 250014),
+    ("lt_LT", 250015),
+    ("lv_LV", 250016),
+    ("my_MM", 250017),
+    ("ne_NP", 250018),
+    ("nl_XX", 250019),
+    ("ro_RO", 250020),
+    ("ru_RU", 250021),
+    ("si_LK", 250022),
+    ("tr_TR", 250023),
+    ("vi_VN", 250024),
+    ("zh_CN", 250025),
+    ("af_ZA", 250026),
+    ("az_AZ", 250027),
+    ("bn_IN", 250028),
+    ("fa_IR", 250029),
+    ("he_IL", 250030),
+    ("hr_HR", 250031),
+    ("id_ID", 250032),
+    ("ka_GE", 250033),
+    ("km_KH", 250034),
+    ("mk_MK", 250035),
+    ("ml_IN", 250036),
+    ("mn_MN", 250037),
+    ("mr_IN", 250038),
+    ("pl_PL", 250039),
+    ("ps_AF", 250040),
+    ("pt_XX", 250041),
+    ("sv_SE", 250042),
+    ("sw_KE", 250043),
+    ("ta_IN", 250044),
+    ("te_IN", 250045),
+    ("th_TH", 250046),
+    ("tl_XX", 250047),
+    ("uk_UA", 250048),
+    ("ur_PK", 250049),
+    ("xh_ZA", 250050),
+    ("gl_ES", 250051),
+    ("sl_SI", 250052),
+];
+
+pub struct IOSMBartModel {
+    model: MBartModel,
     inputtokenizer: Tokenizer,
     outputtokenizer: Tokenizer,
-    config: marian::Config,
+    config: mbart::Config,
     device: Device,
 }
 fn decode_output(inputtokenizer: &Tokenizer,outputtokenizer: &Tokenizer,tokens: &[u32])-> Result<String,E> {
@@ -28,31 +82,31 @@ fn decode_output(inputtokenizer: &Tokenizer,outputtokenizer: &Tokenizer,tokens: 
     }
     Ok(decode_result)
 }
-impl IOSMTModel {
+impl IOSMBartModel {
     pub fn new(path:&str, devicein: &Device) -> Result<Self,E> {
         let folder_path = std::path::PathBuf::from(path.to_owned());
         let folder_name = folder_path.file_name().unwrap().to_string_lossy().to_string();
-        let folder_name_parts: Vec<&str> = folder_name.split('-').collect();
-        let mut tokenizer_path = std::path::PathBuf::from(path.to_owned() + &format!("tokenizer-marian-base-{}.json", folder_name_parts[folder_name_parts.len()-2]));
+        let mut tokenizer_path = std::path::PathBuf::from(path.to_owned() + "tokenizer-base.json");
         let inputtokenizer = {
             Tokenizer::from_file(&tokenizer_path).map_err(E::msg)?
         };
-        if folder_name_parts[folder_name_parts.len()-1].eq("en"){
-            tokenizer_path = std::path::PathBuf::from(path.to_owned() + &format!("tokenizer-marian-base-{}.json","big"));
-        }else{
-            tokenizer_path = std::path::PathBuf::from(path.to_owned() + &format!("tokenizer-marian-base-{}.json", folder_name_parts[folder_name_parts.len()-1]));
-        }
+
+        tokenizer_path = std::path::PathBuf::from(path.to_owned() + "tokenizer-base.json");
+        
         let mut outputtokenizer = {
             Tokenizer::from_file(&tokenizer_path).map_err(E::msg)?
         };
         tokenizer_path = std::path::PathBuf::from(path.to_owned() + "model.safetensors");
-        let vb = { unsafe { VarBuilder::from_pth(path.to_owned() + "model.pth", DType::F32, &devicein)? }
+        let vb = { unsafe { VarBuilder::from_mmaped_safetensors(&[tokenizer_path], DType::F32, &devicein)? }
         };
-        let config = marian::Config::read_from_file(path.to_owned() + "config.json");
-        let model: MTModel = marian::MTModel::new(&config, vb)?;
+        let config = mbart::Config::read_from_file(path.to_owned() + "config.json");
+        let model = MBartModel::new(&config, vb)?;
         let startToken = outputtokenizer.decode(&vec![config.eos_token_id], true).map_err(E::msg)?;
         let endToken = outputtokenizer.decode(&vec![config.pad_token_id], true).map_err(E::msg)?;
-        let tokens: Vec<String> = vec![startToken, endToken];
+        //map the first element of each item in lang_code_to_id to a vector
+        let mut tokens: Vec<_> = lang_code_to_id.iter().map(|(code, _)| code.to_string()).collect();
+        tokens.push(startToken.clone());
+        tokens.push(endToken.clone());
         let tokens: Vec<_> = tokens
         .into_iter()
         .map(|s| tokenizers::AddedToken::from(s, true))
@@ -71,6 +125,8 @@ impl IOSMTModel {
     pub fn inference(
         &mut self,
         input:String,
+        src_lan: String, 
+        target_lan: String,
         predictionStringCallback: Option<extern "C" fn(*const c_char)>,
     ) -> Result<String,E> {
         let device = &self.device;
@@ -86,18 +142,20 @@ impl IOSMTModel {
                 .map_err(E::msg)?
                 .get_ids()
                 .to_vec();
-            tokens.push(self.config.eos_token_id);
+            if(tokens.len() > 0){
+                tokens[0] = lang_code_to_id.iter().find(|(code, _)| code.eq(&src_lan)).unwrap().1;
+            }
             let tokens = Tensor::new(tokens.as_slice(), &device)?.unsqueeze(0)?;
             self.model.encoder().forward(&tokens, 0)?
         };
         let mut result =  String::from("");
-        let predict_seq = encoder_xs.dim(1)?;
 
         match self.config.num_beams {
             Some(num_beams) =>{
-                let mut token_ids = vec![self.config.decoder_start_token_id];
+                let mut token_ids = vec![2,lang_code_to_id.iter().find(|(code, _)| code.eq(&target_lan)).unwrap().1];
                 let mut beams = vec![(token_ids.clone(), 0.0)];
-                for length in 0..1000 {
+                let predict_seq = encoder_xs.dim(1)?;
+                for length in 0..(predict_seq*2) {
                     let mut new_beams = Vec::new();
                     for beam in beams.iter() {
                         // Get current sequence and score
@@ -153,7 +211,7 @@ impl IOSMTModel {
                     //println!("{:?} ", beams[0]);
                     //let resulttmp = decode_output(&(self.inputtokenizer), &(self.outputtokenizer),beams[0].0.as_slice())?;
                     let resulttmp = tokenizer_dec.decode( beams[0].0.as_slice())?;
-                    //println!("{resulttmp}");
+                    println!("{resulttmp}");
                 }
                 
                 // Select sequence with highest score
@@ -162,8 +220,9 @@ impl IOSMTModel {
                 //print!("{result}");
             }
             None => {
-                let mut token_ids = vec![self.config.decoder_start_token_id];
-                for index in 0..1000 {
+                let mut token_ids = vec![2,lang_code_to_id.iter().find(|(code, _)| code.eq(&target_lan)).unwrap().1];
+                let predict_seq = encoder_xs.dim(1)?;
+                for index in 0..(predict_seq*2) {
                     let context_size = if index >= 1 { 1 } else { token_ids.len() };
                     let start_pos = token_ids.len().saturating_sub(context_size);
                     let input_ids = Tensor::new(&token_ids[start_pos..], &device)?.unsqueeze(0)?;
@@ -215,7 +274,7 @@ impl IOSMTModel {
 //std::mem::forget(model_box);
 
 #[no_mangle]
-pub extern "C" fn iosmt_model_new(path: *const c_char, gpu: bool) -> *mut IOSMTModel {
+pub extern "C" fn iosmbart_model_new(path: *const c_char, gpu: bool) -> *mut IOSMBartModel {
     // 从 C 字符串转换为 Rust 字符串
     let path_str = unsafe { CStr::from_ptr(path).to_string_lossy().into_owned() };
     let device;
@@ -233,7 +292,7 @@ pub extern "C" fn iosmt_model_new(path: *const c_char, gpu: bool) -> *mut IOSMTM
     }else{
         device = Device::Cpu;
     }
-    match IOSMTModel::new(&path_str, &device) {
+    match IOSMBartModel::new(&path_str, &device) {
         Ok(model) => Box::into_raw(Box::new(model)),
         Err(e) => { 
             eprintln!("{}", e);
@@ -243,16 +302,18 @@ pub extern "C" fn iosmt_model_new(path: *const c_char, gpu: bool) -> *mut IOSMTM
 }
 
 #[no_mangle]
-pub extern "C" fn iosmt_model_inference_new(ptr: *mut IOSMTModel, input: *const c_char, predictionStringCallback: Option<extern "C" fn(*const c_char)>) -> *mut c_char {
+pub extern "C" fn iosmbart_model_inference_new(ptr: *mut IOSMBartModel, input: *const c_char, src_lan: *const c_char, target_lan: *const c_char, predictionStringCallback: Option<extern "C" fn(*const c_char)>) -> *mut c_char {
     if ptr.is_null() {
-        eprintln!("Error: iosmt_model_inference_new null");
+        eprintln!("Error: iosmbart_model_inference_new null");
         return std::ptr::null_mut();
     }
     let input_str = unsafe { CStr::from_ptr(input).to_string_lossy().into_owned() };
+    let src_lan_str = unsafe { CStr::from_ptr(src_lan).to_string_lossy().into_owned() };
+    let target_lan_str = unsafe { CStr::from_ptr(target_lan).to_string_lossy().into_owned() };
     // 把原始指针转换回 Box，这将确保资源被正确释放
     let mut model_box = unsafe { Box::from_raw(ptr) };
     
-    let result_ptr = match model_box.inference(input_str,predictionStringCallback){
+    let result_ptr = match model_box.inference(input_str, src_lan_str, target_lan_str, predictionStringCallback){
         Ok(result) => {
             match CString::new(result) {
                 Ok(c_string) => c_string.into_raw(),
@@ -269,16 +330,18 @@ pub extern "C" fn iosmt_model_inference_new(ptr: *mut IOSMTModel, input: *const 
 }
 
 #[no_mangle]
-pub extern "C" fn iosmt_model_inference(ptr: *mut IOSMTModel, input: *const c_char) -> *mut c_char {
+pub extern "C" fn iosmbart_model_inference(ptr: *mut IOSMBartModel, input: *const c_char, src_lan: *const c_char, target_lan: *const c_char) -> *mut c_char {
     if ptr.is_null() {
-        eprintln!("Error: iosmt_model_inference null");
+        eprintln!("Error: iosmbart_model_inference null");
         return std::ptr::null_mut();
     }
     let input_str = unsafe { CStr::from_ptr(input).to_string_lossy().into_owned() };
+    let src_lan_str = unsafe { CStr::from_ptr(src_lan).to_string_lossy().into_owned() };
+    let target_lan_str = unsafe { CStr::from_ptr(target_lan).to_string_lossy().into_owned() };
     // 把原始指针转换回 Box，这将确保资源被正确释放
     let mut model_box = unsafe { Box::from_raw(ptr) };
     
-    let result_ptr = match model_box.inference(input_str,None){
+    let result_ptr = match model_box.inference(input_str, src_lan_str, target_lan_str,None){
         Ok(result) => {
             match CString::new(result) {
                 Ok(c_string) => c_string.into_raw(),
@@ -296,51 +359,23 @@ pub extern "C" fn iosmt_model_inference(ptr: *mut IOSMTModel, input: *const c_ch
 
 
 #[no_mangle]
-pub extern "C" fn iosmt_model_free(ptr: *mut IOSMTModel) {
+pub extern "C" fn iosmbart_model_free(ptr: *mut IOSMBartModel) {
     if ptr.is_null() {
         // 处理错误或提前返回
-        eprintln!("Error: iosmt_model_free null");
+        eprintln!("Error: iosmbart_model_free null");
         return;
     }
     // 把原始指针转换回 Box，这将确保资源被正确释放
     unsafe { Box::from_raw(ptr) };
 }
 
-#[no_mangle]
-pub extern fn rust_greeting(to: *const c_char) -> *mut c_char {
-    let c_str = unsafe { CStr::from_ptr(to) };
-    let recipient = match c_str.to_str() {
-        Err(_) => "there",
-        Ok(string) => string,
-    };
-
-    CString::new("Hello ".to_owned() + recipient).unwrap().into_raw()
-}
-
-#[no_mangle]
-pub extern fn string_free(s: *mut c_char) {
-    unsafe {
-        if s.is_null() { return }
-        let _ = CString::from_raw(s);
-    };
-}
-
-pub fn safe_load_model_inference(path: &str,input: &str) {
-    let c_path = CString::new(path).expect("CString::new failed");
-    let c_input = CString::new(input).expect("CString::new failed");
-    let model = unsafe { iosmt_model_new(c_path.as_ptr(), true) };
-    let result = iosmt_model_inference(model,c_input.as_ptr());
-    string_free(result);
-    iosmt_model_free(model);
-
-}
 
 pub fn signal_test_load_model_inference(path: &str,input: &str) -> Result<String,E>{
     //let c_path = CString::new(path).expect("CString::new failed");
-    //let model11 = unsafe { iosmt_model_new(c_path.as_ptr(), true) };
+    //let model11 = unsafe { iosmbart_model_new(c_path.as_ptr(), true) };
     let device = Device::new_metal(0)?;
     let device = Device::Cpu;
-    let mut model =IOSMTModel::new(path,&device)?;
+    let mut model =IOSMBartModel::new(path,&device)?;
        
     model.model.reset_kv_cache();
     
