@@ -24,7 +24,20 @@ fn test_load_model1() {
 #[test]
 fn test_load_model3() {
     let start = Instant::now();
-    safe_load_model_inference("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-en-zh/","What's the weather today?");
+    safe_load_model_inference("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-en-zh/","who are you");
+    // 进行测试逻辑
+    // 获取当前时间，并与开始时间相减得到经过的时间
+    let elapsed = start.elapsed();
+
+    // 打印出所用的时间
+    println!("Elapsed time: {:.2?}", elapsed);
+}
+
+
+#[test]
+fn test_load_model4() {
+    let start = Instant::now();
+    safe_load_model_inference("/Users/xigsun/Documents/repo/mt-language/opus-mt-de-en/","What's the weather today?");
     // 进行测试逻辑
     // 获取当前时间，并与开始时间相减得到经过的时间
     let elapsed = start.elapsed();
@@ -51,6 +64,6 @@ fn test_mbart_model() -> Result<()>{
                 .get_ids()
                 .to_vec();
     let mut model = IOSMBartModel::new("/Users/xigsun/Documents/repo/mbart-large-50-many-to-many-mmt/",&device)?;
-    let re = model.inference(String::from(input), None);
+    //let re = model.inference(String::from(input), None);
     return Ok(());
 }

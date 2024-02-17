@@ -37,7 +37,7 @@ impl IOSMTModel {
         let inputtokenizer = {
             Tokenizer::from_file(&tokenizer_path).map_err(E::msg)?
         };
-        if folder_name_parts[folder_name_parts.len()-1].eq("en"){
+        if folder_name_parts[folder_name_parts.len()-1].eq("en") && folder_name_parts[folder_name_parts.len()-2].eq("zh"){
             tokenizer_path = std::path::PathBuf::from(path.to_owned() + &format!("tokenizer-marian-base-{}.json","big"));
         }else{
             tokenizer_path = std::path::PathBuf::from(path.to_owned() + &format!("tokenizer-marian-base-{}.json", folder_name_parts[folder_name_parts.len()-1]));
@@ -45,8 +45,11 @@ impl IOSMTModel {
         let mut outputtokenizer = {
             Tokenizer::from_file(&tokenizer_path).map_err(E::msg)?
         };
-        tokenizer_path = std::path::PathBuf::from(path.to_owned() + "model.safetensors");
-        let vb = { unsafe { VarBuilder::from_pth(path.to_owned() + "model.pth", DType::F32, &devicein)? }
+        let model_path = [std::path::PathBuf::from(path.to_owned() + "model.safetensors")];
+        // let vb = { unsafe { VarBuilder::from_pth(path.to_owned() + "model.pth", DType::F32, &devicein)? }
+        // };
+
+        let vb = { unsafe { VarBuilder::from_mmaped_safetensors(&model_path, DType::F32, &devicein)? }
         };
         let config = marian::Config::read_from_file(path.to_owned() + "config.json");
         let model: MTModel = marian::MTModel::new(&config, vb)?;
@@ -97,7 +100,7 @@ impl IOSMTModel {
             Some(num_beams) =>{
                 let mut token_ids = vec![self.config.decoder_start_token_id];
                 let mut beams = vec![(token_ids.clone(), 0.0)];
-                for length in 0..1000 {
+                for length in 0..(predict_seq*2) {
                     let mut new_beams = Vec::new();
                     for beam in beams.iter() {
                         // Get current sequence and score
@@ -163,7 +166,7 @@ impl IOSMTModel {
             }
             None => {
                 let mut token_ids = vec![self.config.decoder_start_token_id];
-                for index in 0..1000 {
+                for index in 0..(predict_seq*2) {
                     let context_size = if index >= 1 { 1 } else { token_ids.len() };
                     let start_pos = token_ids.len().saturating_sub(context_size);
                     let input_ids = Tensor::new(&token_ids[start_pos..], &device)?.unsqueeze(0)?;

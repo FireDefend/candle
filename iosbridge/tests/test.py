@@ -263,3 +263,17 @@ with tokenizer.as_target_tokenizer():
 
 generated_tokens = model.generate(**model_inputs, labels=labels) # forward pass
 tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+
+# TowerBase
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_id = "/Users/xigsun/Documents/repo/TowerBase-7B-v0.1"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+model = AutoModelForCausalLM.from_pretrained(model_id)
+
+text = "English: My name is TowerBase.\nPortuguese:"
+inputs = tokenizer(text, return_tensors="pt")
+
+outputs = model.generate(**inputs, max_new_tokens=20)
+print(tokenizer.decode(outputs[0], skip_special_tokens=True))
