@@ -29,15 +29,14 @@ candle-examples = { path = "../candle-examples", version = "0.3.2" }
 cpal = "0.15.2"
 rubato = "0.14.1"
 sdl2 = { git = "https://github.com/FireDefend/rust-sdl2.git", branch = "master" } # features = ["static-link"]
-#sdl2 = "0.36.0"
-
+# sdl2 = "0.36.0"
 
 [lib]
 name = "iosbridge"
 crate-type = ["staticlib", "cdylib"]
 
 [features]
-default = []
+default = ["metal"]
 accelerate = ["dep:accelerate-src", "candle/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 mkl = ["dep:intel-mkl-src", "candle/mkl", "candle-nn/mkl"]
 metal = ["candle/metal", "candle-nn/metal"]

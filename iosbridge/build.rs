@@ -1,6 +1,11 @@
+
 fn main() {
-    // 指定静态库的路径
+
+    #[cfg(target_os = "ios")]
     println!("cargo:rustc-link-search=native=/Users/xigsun/Documents/repo/candle/iosbridge/");
+    #[cfg(target_os = "ios")]
     println!("cargo:rustc-link-search=framework=/Users/xigsun/Documents/repo/candle/iosbridge/");
+    #[cfg(target_os = "ios")]
     println!("cargo:rustc-flags=-l framework=SDL2");
+
 }

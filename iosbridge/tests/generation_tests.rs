@@ -46,6 +46,7 @@ fn test_load_model4() {
     println!("Elapsed time: {:.2?}", elapsed);
 }
 
+#[cfg(feature = "metal")]
 #[test]
 fn test_load_model2() {
     signal_test_load_model_inference("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en/","求真务实是中国共产党人的重要思想和工作方法。前不久举行的中央经济工作会议上，习近平总书记着眼于做好明年经济工作、巩固和增强经济回升向好态势，对抓落实提出了明确要求，强调“要求真务实抓落实”“坚决纠治形式主义、官僚主义”。");

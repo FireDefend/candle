@@ -342,7 +342,7 @@ pub fn signal_test_load_model_inference(path: &str,input: &str) -> Result<String
     //let c_path = CString::new(path).expect("CString::new failed");
     //let model11 = unsafe { iosmt_model_new(c_path.as_ptr(), true) };
     let device = Device::new_metal(0)?;
-    let device = Device::Cpu;
+    //let device = Device::Cpu;
     let mut model =IOSMTModel::new(path,&device)?;
        
     model.model.reset_kv_cache();
