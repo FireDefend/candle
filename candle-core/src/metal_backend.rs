@@ -195,7 +195,7 @@ impl MetalDevice {
     /// synchronization when the CPU memory is modified
     /// Used as a bridge to gather data back from the GPU
     pub fn new_buffer_managed(&self, size: NSUInteger) -> Result<Arc<Buffer>> {
-        self.allocate_buffer(size, MTLResourceOptions::StorageModeManaged, "managed")
+        self.allocate_buffer(size, MTLResourceOptions::StorageModeShared, "managed")
     }
 
     /// Creates a new buffer from data.
@@ -209,7 +209,7 @@ impl MetalDevice {
         let tmp = self.device.new_buffer_with_data(
             data.as_ptr() as *const core::ffi::c_void,
             size,
-            metal::MTLResourceOptions::StorageModeManaged,
+            metal::MTLResourceOptions::StorageModeShared,
         );
         let real = self.allocate_buffer(
             size,
@@ -1560,7 +1560,7 @@ impl BackendDevice for MetalDevice {
         let seed = Arc::new(Mutex::new(device.new_buffer_with_data(
             [299792458].as_ptr() as *const c_void,
             4,
-            MTLResourceOptions::StorageModeManaged,
+            MTLResourceOptions::StorageModeShared,
         )));
         Ok(Self {
             device,

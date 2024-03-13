@@ -29,11 +29,14 @@ candle-examples = { path = "../candle-examples", version = "0.3.2" }
 cpal = "0.15.2"
 rubato = "0.14.1"
 sdl2 = { git = "https://github.com/FireDefend/rust-sdl2.git", branch = "master" } # features = ["static-link"]
-# sdl2 = "0.36.0"
+#sdl2 = "0.36.0"
 
 [lib]
 name = "iosbridge"
 crate-type = ["staticlib", "cdylib"]
+
+[dependencies.objc]
+version = "0.2.4"
 
 [features]
 default = ["metal"]

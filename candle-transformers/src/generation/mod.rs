@@ -84,6 +84,35 @@ impl LogitsProcessor {
         Ok(vec_f32.into_iter().zip(vec_u32.into_iter()).collect::<Vec<(f32, u32)>>())
     }
 
+    pub fn sample_new_beam(&mut self, logits: &Tensor, beams: Vec<(Vec<u32>, f32)>) -> Result<Vec<(Vec<u32>, f32, usize)>> {
+        let logits = logits.to_dtype(DType::F32)?;
+        let cur_len = beams[0].0.len();
+        let prs = candle_nn::ops::softmax_last_dim(&logits)?;
+        let mut prs: Vec<Vec<f32>> = prs.to_vec2()?;
+        let target_beam_size = beams.len();
+        let mut new_beams = Vec::with_capacity(target_beam_size * target_beam_size);
+        if(cur_len == 1){
+            prs = vec![prs[0].clone()];
+        }
+        for (pos, individual_beam_prob) in prs.iter().enumerate() {
+            let mut argsort_indices = (0..individual_beam_prob.len()).collect::<Vec<_>>();
+            argsort_indices.sort_by(|&i, &j| individual_beam_prob[j].partial_cmp(&individual_beam_prob[i]).unwrap());
+            for i in 0..target_beam_size {
+                let index = argsort_indices[i];
+                let mut new_seq = beams[pos].0.clone();
+                new_seq.push(index as u32);
+                let prob: f32 = individual_beam_prob[index];
+                // 6 0.25
+                // 30 0.118
+                let new_score = beams[pos].1 + prob.log(std::f32::consts::E);
+                new_beams.push((new_seq, new_score, pos));
+    
+            }
+        }
+        new_beams.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        Ok(new_beams.into_iter().take(target_beam_size as usize).collect())
+    }
+
     pub fn sample(&mut self, logits: &Tensor) -> Result<u32> {
         let logits = logits.to_dtype(DType::F32)?;
         let next_token = match self.temperature {

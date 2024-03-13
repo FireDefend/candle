@@ -269,6 +269,35 @@ impl Attention {
     fn reset_kv_cache(&mut self) {
         self.kv_cache = None
     }
+
+    pub fn arrange_kv_cache(&mut self, arr_order: &Vec<usize>) -> Result<()> {
+        match &self.kv_cache {
+            None => {},
+            Some((p_key_states, p_value_states)) => {
+                let b_sz = p_key_states.dim(0)?;
+                let mut need_arrange = false;
+                for index in 0..b_sz{
+                    if(index != arr_order[index]){
+                        need_arrange = true;
+                        break;
+                    }
+                }
+                if(need_arrange == false){
+                    return Ok(());
+                }
+                let mut new_key_states = Vec::with_capacity(b_sz);
+                let mut new_value_states = Vec::with_capacity(b_sz);
+                for i in 0..b_sz {
+                    new_key_states.push(p_key_states.get(arr_order[i])?.unsqueeze(0)?);   
+                    new_value_states.push(p_value_states.get(arr_order[i])?.unsqueeze(0)?);  
+                }
+                let key_states = Tensor::cat(&new_key_states, 0)?.contiguous()?;
+                let value_states = Tensor::cat(&new_value_states, 0)?.contiguous()?;
+                self.kv_cache = Some((key_states, value_states));
+            }
+        };
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -310,7 +339,7 @@ impl EncoderLayer {
         (xs + residual)?.apply(&self.final_layer_norm)
     }
 
-    fn reset_kv_cache(&mut self) {
+    fn reset_kv_cache(&mut self){
         self.self_attn.reset_kv_cache()
     }
 }
@@ -378,6 +407,9 @@ impl DecoderLayer {
     fn reset_kv_cache(&mut self) {
         self.self_attn.reset_kv_cache();
         self.encoder_attn.reset_kv_cache()
+    }
+    pub fn arrange_kv_cache(&mut self, arr_order: &Vec<usize>) {
+        self.self_attn.arrange_kv_cache(arr_order);
     }
 }
 
@@ -493,6 +525,12 @@ impl Decoder {
             layer.reset_kv_cache()
         }
     }
+
+    pub fn arrange_kv_cache(&mut self, arr_order: Vec<usize>) {
+        for layer in self.layers.iter_mut() {
+            layer.arrange_kv_cache(&arr_order);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -517,6 +555,9 @@ impl Model {
     fn reset_kv_cache(&mut self) {
         self.encoder.reset_kv_cache();
         self.decoder.reset_kv_cache();
+    }
+    pub fn arrange_kv_cache(&mut self, arr_order: Vec<usize>) {
+        self.decoder.arrange_kv_cache(arr_order);
     }
 }
 
@@ -568,5 +609,9 @@ impl MTModel {
 
     pub fn reset_kv_cache(&mut self) {
         self.model.reset_kv_cache();
+    }
+
+    pub fn arrange_kv_cache(&mut self, arr_order: Vec<usize>) {
+        self.model.arrange_kv_cache(arr_order);
     }
 }

@@ -1283,18 +1283,18 @@ pub fn call_gemm(
     let fused_activation = false;
     let fused_bias = false;
     let (m_simd, n_simd, k_simd, m_splits, n_splits) = if m == 1 {
-        let m_simd = 8;
-        let n_simd = 8;
-        let k_simd = 64;
-        let m_splits = 1;
-        let n_splits = 1;
+        let m_simd = 16;
+        let n_simd = 16;
+        let k_simd = 32;
+        let m_splits = 2;
+        let n_splits = 2;
         (m_simd, n_simd, k_simd, m_splits, n_splits)
     } else {
-        let m_simd = 40;
-        let n_simd = 40;
+        let m_simd = 16;
+        let n_simd = 16;
         let k_simd = 32;
-        let m_splits = 1;
-        let n_splits = 1;
+        let m_splits = 2;
+        let n_splits = 2;
         (m_simd, n_simd, k_simd, m_splits, n_splits)
     };
     let constants = Some(ConstantValues::new(vec![
@@ -1367,12 +1367,13 @@ pub fn call_gemm(
         // TODO byte_stride_d
         let byte_stride_d = 0;
 
-        let buffer: Vec<u64> = vec![
-            byte_stride_a as _,
-            byte_stride_b as _,
-            byte_stride_c as _,
-            byte_stride_d as _,
-        ];
+        let mut buffer: Vec<u64> = Vec::with_capacity(grid_z * 4);
+        for i in 0..grid_z  {
+            buffer.push((byte_stride_a * i) as _);
+            buffer.push((byte_stride_b * i) as _);
+            buffer.push((byte_stride_c * i) as _);
+            buffer.push((byte_stride_d * i) as _);
+        }
         encoder.set_bytes(
             10,
             (buffer.len() * core::mem::size_of::<u64>()) as NSUInteger,

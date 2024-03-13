@@ -10,6 +10,7 @@ void iosmt_model_free(IOSMTModel* model);
 const char* iosmt_model_inference(IOSMTModel* ptr, const char* input);
 const char* iosmt_model_inference_new(IOSMTModel* ptr, const char* input, void (*predictionStringCallback)(const char*));
 const char* rust_greeting(const char* to);
+void happy_test();
 void string_free(char *);
 
 IOSWhisperModel* ios_whisper_model_new(const char* path, _Bool gpu);

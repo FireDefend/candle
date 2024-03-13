@@ -3,12 +3,18 @@ pub mod iosmbart;
 use std::os::raw::{c_char};
 use std::ffi::{CString, CStr};
 use anyhow::Error as E;
+use objc::rc::autoreleasepool;
+use tokenizers::processors::template::Tokens;
 use tokenizers::{Tokenizer, InputSequence};
 use candle_transformers::models::marian::{MTModel, self};
 use candle_nn::VarBuilder;
-use candle::{DType, Tensor, Device};
+use candle::{test_utils, DType, Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use std::time::Instant;
+mod test;
+use crate::test::zeros_metal1;
+use crate::test::{*};
+
 
 pub struct IOSMTModel {
     model: MTModel,
@@ -28,6 +34,7 @@ fn decode_output(inputtokenizer: &Tokenizer,outputtokenizer: &Tokenizer,tokens: 
     }
     Ok(decode_result)
 }
+
 impl IOSMTModel {
     pub fn new(path:&str, devicein: &Device) -> Result<Self,E> {
         let folder_path = std::path::PathBuf::from(path.to_owned());
@@ -95,56 +102,50 @@ impl IOSMTModel {
         };
         let mut result =  String::from("");
         let predict_seq = encoder_xs.dim(1)?;
-
+        self.config.num_beams = Some(6);
         match self.config.num_beams {
             Some(num_beams) =>{
                 let mut token_ids = vec![self.config.decoder_start_token_id];
-                let mut beams = vec![(token_ids.clone(), 0.0)];
+                let mut beams: Vec<(Vec<u32>, f32)> = Vec::with_capacity(num_beams);
+                let mut encoder_xs_in: Vec<&Tensor> = Vec::with_capacity(num_beams);
+                for i in 0..num_beams {
+                    beams.push((token_ids.clone(), 0.0));
+                    encoder_xs_in.push(&encoder_xs);
+                }
+                let encoder_xs: Tensor = Tensor::cat(&encoder_xs_in, 0)?.contiguous()?;
+
                 for length in 0..(predict_seq*2) {
-                    let mut new_beams = Vec::new();
-                    for beam in beams.iter() {
-                        // Get current sequence and score
-                        let (seq, score) = beam;
-
-                        // Check if sequence is complete (e.g., contains EOS)
-                        if seq.last() == Some(&self.config.eos_token_id) || seq.last()  == Some(&self.config.eos_token_id) {
-                            new_beams.push(beam.clone());
-                            continue;
+                    let borrow_beams = &mut beams;
+                    autoreleasepool(|| -> Result<(),E>{ 
+                        //self.model.decoder().reset_kv_cache();
+                        let mut inputstoken: Vec<u32> = Vec::with_capacity(num_beams*(1));
+                        for i in 0..num_beams {
+                            //for length2 in 0..(length+1){
+                                inputstoken.push(borrow_beams[i].0[length]);
+                            //}      
                         }
-
-                        // Get model prediction
-                        // self.model.decoder().reset_kv_cache();
-                        // let mut logits:Tensor = Tensor::new(&seq[0..0], &device)?.unsqueeze(0)?;
-                        // // to do: optimize
-                        // for seq_token_index in 0..seq.len(){
-                        //     let input_ids = Tensor::new(&seq[seq_token_index..(seq_token_index+1)], &device)?.unsqueeze(0)?;
-                        //     logits = self.model.decode(&input_ids, &encoder_xs, seq_token_index)?;
-
-                        // }
-                        self.model.decoder().reset_kv_cache();
-                        let context_size = seq.len();
-                        let start_pos = seq.len().saturating_sub(context_size);
-                        let input_ids = Tensor::new(&seq[start_pos..], &device)?.unsqueeze(0)?;
-                        let mut logits = self.model.decode(&input_ids, &encoder_xs, start_pos)?;
-                        logits = logits.squeeze(0)?;
-                        logits = logits.get(logits.dim(0)? - 1)?;
-                        let tokens_prob = logits_processor.sample_beam(&logits, num_beams)?;
-
-                        // Create new beams for each candidate word
-                        for (prob, idx) in tokens_prob {
-                            let mut new_seq = seq.clone();
-                            new_seq.push(idx);
-                            let new_score = score + prob.log(std::f32::consts::E);
-                            new_beams.push((new_seq, new_score));
-                        }
+                        let input_ids = Tensor::from_slice(&inputstoken, (num_beams, 1), &device)?;
+                        let mut logits = self.model.decode(&input_ids, &encoder_xs, length)?;
                         
+                        if(logits.dim(1)? == 1){
+                            logits = logits.squeeze(1)?;
+                        }else{
+                            logits = logits.get_on_dim(1,length)?;
+                            logits = logits.squeeze(1)?;
+                        }
+                        let new_beams = logits_processor.sample_new_beam(&logits, borrow_beams.to_vec())?;
+                        let arrange_vec = new_beams.iter()
+                        .map(|(vec_u32, float, kv_index)| *kv_index )
+                        .collect();
+                        self.model.arrange_kv_cache(arrange_vec);
+                        *borrow_beams = new_beams.iter()
+                        .map(|(vec_u32, float, _)| (vec_u32.clone(), *float))
+                        .collect();
+                        Ok(())
+                    });
+                    if beams[0].0[length+1] == self.config.eos_token_id || beams[0].0[length+1] == self.config.forced_eos_token_id {
+                        break;
                     }
-
-                    // Keep top K beams with highest total scores
-
-                    //let mut argsort_indices = (0..new_beams.len()).collect::<Vec<_>>();
-                    new_beams.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-                    beams = new_beams.into_iter().take(num_beams as usize).collect();
                     match predictionStringCallback{
                         Some(callback) =>{
                             let re = tokenizer_dec.decode( beams[0].0.as_slice())?;
@@ -153,7 +154,7 @@ impl IOSMTModel {
                         },
                         None => {},
                     }
-                    //println!("{:?} ", beams[0]);
+                    println!("{:?} ", beams[0]);
                     //let resulttmp = decode_output(&(self.inputtokenizer), &(self.outputtokenizer),beams[0].0.as_slice())?;
                     let resulttmp = tokenizer_dec.decode( beams[0].0.as_slice())?;
                     //println!("{resulttmp}");
@@ -167,29 +168,32 @@ impl IOSMTModel {
             None => {
                 let mut token_ids = vec![self.config.decoder_start_token_id];
                 for index in 0..(predict_seq*2) {
-                    let context_size = if index >= 1 { 1 } else { token_ids.len() };
-                    let start_pos = token_ids.len().saturating_sub(context_size);
-                    let input_ids = Tensor::new(&token_ids[start_pos..], &device)?.unsqueeze(0)?;
-                    let logits = self.model.decode(&input_ids, &encoder_xs, start_pos)?;
-                    let logits = logits.squeeze(0)?;
-                    let logits = logits.get(logits.dim(0)? - 1)?;
-                    let token = logits_processor.sample(&logits)?;
-                    token_ids.push(token);
-                    if let Some(t) = tokenizer_dec.next_token(token)? {
-                        use std::io::Write;
-                        print!("{t}");
-                        result = result + &t;
-                        match predictionStringCallback{
-                            Some(callback) =>{
-                                let c_string = CString::new(result).expect("CString::new failed");
-                                callback(c_string.as_ptr());
-                                result = c_string.into_string()?;
-                            },
-                            None => {},
+                    let mut token:u32 = 0;
+                    let borrow_result = &mut result;
+                    //autoreleasepool(|| -> Result<(),E>{            
+                        let context_size = if index >= 1 { 1 } else { token_ids.len() };
+                        let start_pos = token_ids.len().saturating_sub(context_size);
+                        let input_ids = Tensor::new(&token_ids[start_pos..], &device)?.unsqueeze(0)?;
+                        let logits = self.model.decode(&input_ids, &encoder_xs, start_pos)?;
+                        let logits = logits.squeeze(0)?;
+                        let logits = logits.get(logits.dim(0)? - 1)?;
+                        token = logits_processor.sample(&logits)?;
+                        token_ids.push(token);
+                        if let Some(t) = tokenizer_dec.next_token(token)? {
+                            use std::io::Write;
+                            print!("{t}");
+                            borrow_result.push_str(&t);
+                            match predictionStringCallback{
+                                Some(callback) =>{
+                                    let c_string = CString::new((*borrow_result).clone()).expect("CString::new failed");
+                                    callback(c_string.as_ptr());
+                                },
+                                None => {},
+                            }
+                            std::io::stdout().flush()?;
                         }
-                        std::io::stdout().flush()?;
-                    }
-
+                        //Ok(())
+                    //});
                     if token == self.config.eos_token_id || token == self.config.forced_eos_token_id {
                         break;
                     }
@@ -320,6 +324,50 @@ pub extern fn rust_greeting(to: *const c_char) -> *mut c_char {
     CString::new("Hello ".to_owned() + recipient).unwrap().into_raw()
 }
 
+
+pub fn happy_test_sub() -> Result<String,E>{
+    let device = Device::new_metal(0)?;
+    let data: Vec<_> = (0..12).map(|i| i as f32).collect();
+    let a = Tensor::from_slice(&data, (2, 2, 3), &device)?;
+    let data: Vec<_> = (0..12).map(|i| (i + 2) as f32).collect();
+    let b = Tensor::from_slice(&data, (2, 3, 2), &device)?;
+    let expected = [[[16., 19.], [52., 64.]], [[214., 235.], [304., 334.]]];
+    
+    let c = a.matmul(&b)?;
+    assert_eq!(c.to_vec3::<f32>()?, &expected);
+    let mut tokens = vec![0 as f32];
+    for length in 1..1000{
+        tokens.push(length as f32);
+    }
+    
+    let tokens_tensor = Tensor::new(tokens.as_slice(), &device)?;
+
+
+
+    let new_tokens: Vec<f32> = tokens_tensor.to_vec1()?;
+    for length in 0..1000{
+        println!("conv1d test {}", length);
+        //zeros_metal1();
+        autoreleasepool(|| {
+        matmul(&device);
+        });
+        //matmul(&device);
+        if new_tokens[length] != tokens[length]{
+            println!("error");
+            break;
+        }
+    }
+    //let device = Device::new_metal(0)?;
+    Ok(String::from(""))
+}
+
+#[no_mangle]
+pub extern fn happy_test()  {
+    //for length in 2..100{
+        happy_test_sub();
+    //}
+}
+
 #[no_mangle]
 pub extern fn string_free(s: *mut c_char) {
     unsafe {
@@ -332,7 +380,7 @@ pub fn safe_load_model_inference(path: &str,input: &str) {
     let c_path = CString::new(path).expect("CString::new failed");
     let c_input = CString::new(input).expect("CString::new failed");
     let model = unsafe { iosmt_model_new(c_path.as_ptr(), true) };
-    let result = iosmt_model_inference(model,c_input.as_ptr());
+    let result = iosmt_model_inference_new(model,c_input.as_ptr(), None);
     string_free(result);
     iosmt_model_free(model);
 
@@ -341,8 +389,9 @@ pub fn safe_load_model_inference(path: &str,input: &str) {
 pub fn signal_test_load_model_inference(path: &str,input: &str) -> Result<String,E>{
     //let c_path = CString::new(path).expect("CString::new failed");
     //let model11 = unsafe { iosmt_model_new(c_path.as_ptr(), true) };
-    let device = Device::new_metal(0)?;
-    //let device = Device::Cpu;
+    println!("start");
+    //let device = Device::new_metal(0)?;
+    let device = Device::Cpu;
     let mut model =IOSMTModel::new(path,&device)?;
        
     model.model.reset_kv_cache();
@@ -362,13 +411,28 @@ pub fn signal_test_load_model_inference(path: &str,input: &str) -> Result<String
             model.model.encoder().forward(&tokens, 0)?
         };
     let mut result: String =  String::from("");
-    let seq: Vec<u32> = vec![65000, 21802, 5194]; 
+    let seq: Vec<u32> = vec![65000]; 
     let input_ids = Tensor::new(&seq[0..], &device)?.unsqueeze(0)?;
-    let seq2: Vec<u32> = vec![65000, 21802, 2222]; 
+    let seq2: Vec<u32> = vec![65000]; 
     let input_ids2 = Tensor::new(&seq2[0..], &device)?.unsqueeze(0)?;
+    let encoder_xs: Tensor = Tensor::cat(&[&encoder_xs, &encoder_xs,&encoder_xs,&encoder_xs,&encoder_xs,&encoder_xs], 0)?.contiguous()?;
     
-    let cc: Tensor = Tensor::cat(&[&input_ids, &input_ids2,&input_ids, &input_ids2], 0)?.contiguous()?;
+    let cc: Tensor = Tensor::cat(&[&input_ids, &input_ids2,&input_ids2,&input_ids2,&input_ids2,&input_ids2], 0)?.contiguous()?;
+    let logits_batch: Tensor = model.model.decode(&cc, &encoder_xs, 0)?;
+    let seq: Vec<u32> = vec![65000, 904]; 
+    let input_ids = Tensor::new(&seq[1..], &device)?.unsqueeze(0)?;
+    let seq2: Vec<u32> = vec![65000, 904]; 
+    let input_ids2 = Tensor::new(&seq2[1..], &device)?.unsqueeze(0)?;
     
+    let cc: Tensor = Tensor::cat(&[&input_ids, &input_ids2], 0)?.contiguous()?;
+    let logits_batch: Tensor = model.model.decode(&cc, &encoder_xs, 1)?;
+    let seq: Vec<u32> = vec![65000, 904, 42]; 
+    let input_ids = Tensor::new(&seq[2..], &device)?.unsqueeze(0)?;
+    let seq2: Vec<u32> = vec![65000, 904, 42]; 
+    let input_ids2 = Tensor::new(&seq2[2..], &device)?.unsqueeze(0)?;
+    let cc: Tensor = Tensor::cat(&[&input_ids, &input_ids2], 0)?.contiguous()?;
+    let logits_batch: Tensor = model.model.decode(&cc, &encoder_xs, 2)?;
+    let prs = candle_nn::ops::softmax_last_dim(&logits_batch.squeeze(1)?)?;
     let encoder_xs_cc = Tensor::cat(&[&encoder_xs, &encoder_xs,&encoder_xs, &encoder_xs], 0)?.contiguous()?;
     
     let mut logits:Tensor = Tensor::new(&seq[0..1], &device)?.unsqueeze(0)?;
@@ -381,25 +445,41 @@ pub fn signal_test_load_model_inference(path: &str,input: &str) -> Result<String
     // logits = logits.get(logits.dim(0)? - 1)?.clone();
     // let logits = logits.to_dtype(DType::F32)?;
     // let prs = candle_nn::ops::softmax_last_dim(&logits)?.to_string();
-
+    model.model.decoder().reset_kv_cache();
     let start = Instant::now();
 
     // 这里放置您要测量执行时间的代码
     // 例如：some_function();
-    for times in 0..500{
-        model.model.decoder().reset_kv_cache();
-
-        let context_size = seq.len();
-        let start_pos = seq.len().saturating_sub(context_size);
-        //let input_ids = Tensor::new(&cc[start_pos..], &device)?.unsqueeze(0)?;
-        logits = model.model.decode(&input_ids, &encoder_xs, start_pos)?;
-    
-        logits = logits.squeeze(0)?;
+    let mut token_ids = vec![model.config.decoder_start_token_id];
+    let predict_seq = encoder_xs.dim(1)?;
+    for index in 0..(100*2) {
+        let mut token:u32 = 0;
+        let borrow_result = &mut result;
+        //autoreleasepool(|| -> Result<(),E>{            
+            let context_size = if index >= 1 { 1 } else { token_ids.len() };
+            let start_pos = token_ids.len().saturating_sub(context_size);
+            let input_ids = Tensor::new(&token_ids[start_pos..], &device)?.unsqueeze(0)?;
+            let logits = model.model.decode(&input_ids, &encoder_xs, start_pos)?;
+            let logits = logits.squeeze(0)?;
+            let logits = logits.get(logits.dim(0)? - 1)?;
+            token = logits_processor.sample(&logits)?;
+            token_ids.push(token);
+            if let Some(t) = tokenizer_dec.next_token(token)? {
+                use std::io::Write;
+                print!("{t}");
+                borrow_result.push_str(&t);
+                std::io::stdout().flush()?;
+            }
+            //Ok(())
+        //});
+        if token == model.config.eos_token_id || token == model.config.forced_eos_token_id {
+            break;
+        }
     }
 
     // 获取当前时间，并与开始时间相减得到经过的时间
     let elapsed = start.elapsed();
-
+    println!("{}", result);
     // 打印出所用的时间
     println!("Elapsed time: {:.2?}", elapsed);
 

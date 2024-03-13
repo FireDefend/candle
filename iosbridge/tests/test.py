@@ -1,8 +1,8 @@
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-tokenizer= AutoTokenizer.from_pretrained("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en")
+tokenizer= AutoTokenizer.from_pretrained("/Users/xigsun/Documents/repo/mt-language/opus-mt-zh-en")
 
-model = AutoModelForSeq2SeqLM.from_pretrained("/Users/xigsun/Documents/repo/candle/candle-examples/examples/marian-mt/opus-mt-zh-en")
+model = AutoModelForSeq2SeqLM.from_pretrained("/Users/xigsun/Documents/repo/mt-language/opus-mt-zh-en")
 # 准备要翻译的文本
 chinese_text = "求真务实是中国共产党人的重要思想和工作方法。前不久举行的中央经济工作会议上，习近平总书记着眼于做好明年经济工作、巩固和增强经济回升向好态势，对抓落实提出了明确要求，强调“要求真务实抓落实”“坚决纠治形式主义、官僚主义”。"  # 这里你可以替换成任何你想要翻译的中文文本
 chinese_text = "在上一篇文章中我们介绍了注意力机制—目前在深度学习中被广泛应用。注意力机制能够显著提高神经机器翻译任务的性能。本文将会看一看Transformer---加速训练注意力模型的方法。Transformers在很多特定任务上已经优于Google神经机器翻译模型了。不过其最大的优点在于它的并行化训练。Google云强烈建议使用TPU云提供的Transformer模型。我们赶紧撸起袖子拆开模型看一看内部究竟如何吧。"  # 这里你可以替换成任何你想要翻译的中文文本
@@ -26,7 +26,12 @@ probabilities = F.softmax(outputs.logits, dim=-1)
 next_word_logits = probabilities[:, -1, :]
 next_word = torch.argmax(next_word_logits, dim=-1)
 # 进行翻译
+start_time = time.time()
 translated_tokens = model.generate(encoded_text)
+end_time = time.time()
+# 计算并打印执行时间
+elapsed_time = end_time - start_time
+print(f"The code took {elapsed_time} seconds to execute.")
 
 # 解码翻译结果
 translated_text = tokenizer.decode(translated_tokens[0], skip_special_tokens=True)
@@ -277,3 +282,15 @@ inputs = tokenizer(text, return_tensors="pt")
 
 outputs = model.generate(**inputs, max_new_tokens=20)
 print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+
+# gemma
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+tokenizer = AutoTokenizer.from_pretrained("/Users/xigsun/Documents/repo/gemma-2b")
+model = AutoModelForCausalLM.from_pretrained("/Users/xigsun/Documents/repo/gemma-2b")
+
+input_text = "Write me a poem about Machine Learning."
+input_ids = tokenizer(input_text, return_tensors="pt")
+
+outputs = model.generate(**input_ids)
+print(tokenizer.decode(outputs[0]))
